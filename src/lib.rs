@@ -355,12 +355,16 @@ mod play_test {
             Placement {
                 kind: PartKind::Spring,
                 position: [0.0, spring_y, 0.25],
+                rotation_x: 0.0,
+                rotation_y: 0.0,
                 rotation_z: 0.0,
                 sticky: true,
             },
             Placement {
                 kind: PartKind::Ball,
                 position: [0.0, start_y, 0.25],
+                rotation_x: 0.0,
+                rotation_y: 0.0,
                 rotation_z: 0.0,
                 sticky: false,
             },

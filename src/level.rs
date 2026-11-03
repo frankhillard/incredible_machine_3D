@@ -65,6 +65,8 @@ pub struct InventoryDef {
 pub struct Placement {
     pub kind: PartKind,
     pub position: [f32; 3],
+    pub rotation_x: f32,
+    pub rotation_y: f32,
     pub rotation_z: f32,
     pub sticky: bool,
 }
@@ -134,13 +136,65 @@ pub fn level1_placements(level: &Level) -> [Placement; 2] {
         Placement {
             kind: PartKind::Spring,
             position: [-2.7422, 2.7208, z],
+            rotation_x: 0.0,
+            rotation_y: 0.0,
             rotation_z: -28.648_f32.to_radians(),
             sticky: true,
         },
         Placement {
             kind: PartKind::Spring,
             position: [-0.0366, 2.0580, z],
+            rotation_x: 0.0,
+            rotation_y: 0.0,
             rotation_z: -17.189_f32.to_radians(),
+            sticky: true,
+        },
+    ]
+}
+
+/// Two sticky springs and two boards that solve "Level 2".
+///
+/// The first spring sits under the loose ball. The two boards lies in the gap, tilted
+/// toward the landing. The last spring to reach the landing zone. Tilts are the inspector degrees converted to radians.
+#[cfg(test)]
+pub fn level2_placements(level: &Level) -> [Placement; 4] {
+    let ball = level
+        .fixtures
+        .iter()
+        .find(|fixture| fixture.kind == PartKind::Ball)
+        .expect("level 2 starts with a loose ball");
+    let _z = ball.position[2];
+    [
+        Placement {
+            kind: PartKind::Spring,
+            position: [-2.5349, 2.6268, 0.3209],
+            rotation_x: -10.762_f32.to_radians(),
+            rotation_y: 2.743_f32.to_radians(),
+            rotation_z: -28.527_f32.to_radians(),
+            sticky: true,
+        },
+        Placement {
+            kind: PartKind::Board,
+            position: [-0.0610, 2.0860, 0.8006],
+            rotation_x: -5.730_f32.to_radians(),
+            rotation_y: 0.0,
+            rotation_z: -11.459_f32.to_radians(),
+            sticky: true,
+        },
+        Placement {
+            kind: PartKind::Board,
+            position: [1.1892, 1.9591, 0.8101],
+            rotation_x: -5.730_f32.to_radians(),
+            rotation_y: 0.0,
+            rotation_z: 0.0,
+            sticky: true,
+        },
+        Placement {
+            kind: PartKind::Spring,
+            position: [2.3281, 1.88, 0.34],
+            rotation_x: 22.556_f32.to_radians(),
+            rotation_y: 2.817_f32.to_radians(),
+            rotation_z: 16.944_f32.to_radians(),
             sticky: true,
         },
     ]
@@ -207,12 +261,16 @@ pub fn rolling_start_placements(level: &Level) -> [Placement; 2] {
         Placement {
             kind: PartKind::Board,
             position: [board_center.x, board_center.y, ramp.position[2]],
+            rotation_x: 0.0,
+            rotation_y: 0.0,
             rotation_z: board_angle,
             sticky: true,
         },
         Placement {
             kind: PartKind::Ball,
             position: [ball_center.x, ball_center.y, ramp.position[2]],
+            rotation_x: 0.0,
+            rotation_y: 0.0,
             rotation_z: 0.0,
             sticky: false,
         },
@@ -289,8 +347,8 @@ pub fn spawn_player_part(
         &SpawnPart {
             spec: &spec,
             position: Vec3::from_array(placement.position),
-            rotation_x: 0.0,
-            rotation_y: 0.0,
+            rotation_x: placement.rotation_x,
+            rotation_y: placement.rotation_y,
             rotation_z: placement.rotation_z,
             sticky: placement.sticky,
             player: true,
@@ -342,13 +400,13 @@ mod tests {
             .iter()
             .filter(|item| item.kind != PartKind::Ball)
             .all(|item| item.sticky));
-        let yawed = levels[4]
+        let pitched = levels[4]
             .fixtures
             .iter()
             .find(|item| item.kind == PartKind::Block && (item.position[0] + 1.5).abs() < 0.01)
             .expect("level 2 has a block at x=-1.5");
-        assert!((yawed.rotation_y - 0.4).abs() < 1e-4);
-        assert!(yawed.rotation_x.abs() < 1e-4);
+        assert!((pitched.rotation_x - 0.1).abs() < 1e-4);
+        assert!(pitched.rotation_y.abs() < 1e-4);
 
         // Bounce the Gap
         assert!(levels[2].inventory.iter().any(|item| item.kind == PartKind::Spring));
@@ -435,6 +493,70 @@ mod tests {
             across.position[0] > high_right && across.position[0] < landing_left,
             "the second spring at x={} is not in the gap {high_right}..{landing_left}",
             across.position[0]
+        );
+    }
+
+    #[test]
+    fn level_2_solution_puts_the_spring_uder_the_ball_and_the_spring_and_boards_across_the_gap() {
+        let level = &builtin_levels()[4];
+        let [under, first_board, second_board, landing_spring] = level2_placements(level);
+        let ball = level
+            .fixtures
+            .iter()
+            .find(|fixture| fixture.kind == PartKind::Ball)
+            .expect("level 2 starts with a loose ball");
+        assert_eq!(under.kind, PartKind::Spring);
+        assert!(under.sticky);
+        assert_eq!(first_board.kind, PartKind::Board);
+        assert!(first_board.sticky);
+        assert_eq!(second_board.kind, PartKind::Board);
+        assert!(second_board.sticky);
+        assert_eq!(landing_spring.kind, PartKind::Spring);
+        assert!(landing_spring.sticky);
+
+        let axis = Quat::from_euler(
+            EulerRot::XYZ,
+            under.rotation_x,
+            under.rotation_y,
+            under.rotation_z,
+        ) * Vec3::X;
+        let along = (Vec3::from_array(ball.position) - Vec3::from_array(under.position)).dot(axis);
+        let half = PartKind::Spring.spec().size.x * 0.5;
+        assert!(
+            along.abs() <= half,
+            "the first spring is not under the ball, offset {along}"
+        );
+        assert!(under.position[1] < ball.position[1]);
+
+        let high = level
+            .fixtures
+            .iter()
+            .filter(|fixture| fixture.kind != PartKind::Ball)
+            .max_by(|left, right| {
+                let left_top = left.position[1] + left.size[1] * 0.5;
+                let right_top = right.position[1] + right.size[1] * 0.5;
+                left_top.total_cmp(&right_top)
+            })
+            .expect("level 2 needs a high platform");
+        let high_right = high.position[0] + high.size[0] * 0.5;
+        let landing_left = level
+            .fixtures
+            .iter()
+            .filter(|fixture| fixture.position[0] > high_right && fixture.size[0] > fixture.size[1])
+            .map(|fixture| fixture.position[0] - fixture.size[0] * 0.5)
+            .min_by(|left, right| left.total_cmp(right))
+            .expect("level 2 needs a landing across the gap");
+        assert!(
+            first_board.position[0] > high_right && first_board.position[0] < landing_left,
+            "the first board at x={} is not in the gap {high_right}..{landing_left}",
+            first_board.position[0]
+        );
+        assert!(second_board.position[0] > first_board.position[0]);
+        assert!(landing_spring.position[0] > second_board.position[0]);
+        assert!(
+            landing_spring.position[0] > landing_left,
+            "the last spring at x={} does not reach the landing",
+            landing_spring.position[0]
         );
     }
 }

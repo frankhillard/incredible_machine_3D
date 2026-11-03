@@ -689,6 +689,8 @@ pub fn pointer(
         Placement {
             kind,
             position: [point.x, point.y, point.z],
+            rotation_x: 0.0,
+            rotation_y: 0.0,
             rotation_z: shelf.tilt,
             sticky: kind.spec().sticky_default,
         },
