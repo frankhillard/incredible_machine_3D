@@ -130,6 +130,8 @@ pub struct Ghost;
 pub struct SpawnPart<'a> {
     pub spec: &'a PartSpec,
     pub position: Vec3,
+    pub rotation_x: f32,
+    pub rotation_y: f32,
     pub rotation_z: f32,
     pub sticky: bool,
     pub player: bool,
@@ -143,7 +145,12 @@ pub fn spawn_part(
     palette: &Palette,
     spawn: &SpawnPart,
 ) -> Entity {
-    let rotation = Quat::from_rotation_z(spawn.rotation_z);
+    let rotation = Quat::from_euler(
+        EulerRot::XYZ,
+        spawn.rotation_x,
+        spawn.rotation_y,
+        spawn.rotation_z,
+    );
     let transform = Transform {
         translation: spawn.position,
         rotation,

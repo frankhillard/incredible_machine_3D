@@ -172,6 +172,61 @@ mod play_test {
     }
 
     #[test]
+    fn level_1_springs_carry_the_ball_into_the_basket() {
+        let levels = builtin_levels();
+        let level = &levels[3];
+        let placements = level::level1_placements(level);
+        let ball_start = Vec3::from_array(
+            level
+                .fixtures
+                .iter()
+                .find(|fixture| fixture.kind == PartKind::Ball)
+                .expect("level 1 starts with a loose ball")
+                .position,
+        );
+
+        let mut app = test_app();
+        app.insert_resource(Scripted(placements.to_vec()));
+        app.insert_resource(level::LevelOps {
+            go_to: Some(3),
+            reload: false,
+        });
+        app.finish();
+        app.cleanup();
+        app.update();
+
+        let spawned = ball_translation(&mut app).expect("the level ball should spawn");
+        assert!(
+            spawned.distance(ball_start) < 0.05,
+            "spawned at {spawned:?}, expected {ball_start:?}"
+        );
+
+        app.world_mut()
+            .resource_mut::<NextState<GameState>>()
+            .set(GameState::Playing);
+
+        let mut won = false;
+        let mut trace = String::new();
+        for frame in 0..1_500 {
+            app.update();
+            let Some(position) = ball_translation(&mut app) else {
+                trace.push_str(&format!("{frame}: ball missing\n"));
+                continue;
+            };
+            let held = app.world().resource::<GoalClock>().held;
+            if frame % 45 == 0 {
+                trace.push_str(&format!("{frame}: {position:?} held={held:.2}\n"));
+            }
+            if *app.world().resource::<State<GameState>>().get() == GameState::Won {
+                won = true;
+                trace.push_str(&format!("won at frame {frame}: {position:?}\n"));
+                break;
+            }
+        }
+        assert!(won, "the springs did not land the ball in the basket\n{trace}");
+    }
+
+    #[test]
     fn a_ball_carried_onto_a_tilted_board_then_rolls_down_it() {
         let mut app = test_app();
         app.insert_resource(Scripted(Vec::new()));

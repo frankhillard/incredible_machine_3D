@@ -594,6 +594,8 @@ pub fn sync_ghost(
         &crate::parts::SpawnPart {
             spec: &spec,
             position: point,
+            rotation_x: 0.0,
+            rotation_y: 0.0,
             rotation_z: shelf.tilt,
             sticky: true,
             player: false,
