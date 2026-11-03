@@ -13,17 +13,50 @@
         overflow: hidden;
         background: #140d09;
       }
+      /* Bevy writes a fixed pixel size onto the canvas. The important
+         rules keep that box stretched to the window, including the
+         module that was built before the canvas id was set. */
       canvas {
-        width: 100%;
-        height: 100%;
+        position: fixed !important;
+        inset: 0 !important;
+        width: 100% !important;
+        height: 100% !important;
         display: block;
+      }
+      #boot {
+        position: fixed;
+        left: 16px;
+        top: 16px;
+        max-width: 48rem;
+        color: #fff6e4;
+        font: 16px/1.4 sans-serif;
+        white-space: pre-wrap;
+        z-index: 5;
       }
     </style>
   </head>
   <body>
+    <p id="boot">Loading the machine…</p>
+    <canvas id="bevy"></canvas>
     <script type="module">
-      import init from "./web/pkg/incredible_machine_3d.js";
-      await init();
+      const boot = document.getElementById("boot");
+      const show = (text) => {
+        boot.hidden = false;
+        boot.textContent = text;
+      };
+      window.addEventListener("error", (event) => {
+        show(event.message || String(event.error));
+      });
+      window.addEventListener("unhandledrejection", (event) => {
+        show(String(event.reason));
+      });
+      try {
+        const init = (await import("./web/pkg/incredible_machine_3d.js")).default;
+        await init();
+        boot.remove();
+      } catch (error) {
+        show(error && error.stack ? error.stack : String(error));
+      }
     </script>
   </body>
 </html>
