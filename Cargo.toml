@@ -1,0 +1,61 @@
+[package]
+name = "incredible_machine_3d"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.99"
+description = "A 3D contraption puzzle. Nail the parts, then let them tumble."
+license = "MIT"
+
+[dependencies]
+# Default Bevy features pull ALSA (audio) and Wayland. This machine has the X11
+# headers and a Vulkan loader, so the game enables the 3D stack on X11 directly.
+bevy = { version = "0.20", default-features = false, features = [
+    "std",
+    "async_executor",
+    "multi_threaded",
+    "bevy_asset",
+    "bevy_log",
+    "bevy_state",
+    "reflect_auto_register",
+    "default_font",
+    "bevy_winit",
+    "webgl2",
+    "x11",
+    "mouse",
+    "keyboard",
+    "sysinfo_plugin",
+    "3d_bevy_render",
+    "bevy_gizmos",
+    "scene",
+    "picking",
+] }
+# Parallel stays off in the shared dependency so the web build does not pull Rayon.
+# The native target below turns it back on.
+avian3d = { version = "0.8", default-features = false, features = [
+    "3d",
+    "parry-f32",
+    "xpbd_joints",
+] }
+bevy_egui = { version = "0.43", default-features = false, features = [
+    "default_fonts",
+    "render",
+    "picking",
+    "open_url",
+] }
+serde = { version = "1", features = ["derive"] }
+ron = "0.10"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+avian3d = { version = "0.8", default-features = false, features = ["parallel"] }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.test]
+opt-level = 1
+
+[profile.test.package."*"]
+opt-level = 3
