@@ -58,4 +58,4 @@ The physics step is [Avian](https://github.com/avianphysics/avian), running on t
 cargo test
 ```
 
-The tests parse both level files, check the dwell timer, and play "A Rolling Start" through to the win, then stop and confirm the ball is back where you placed it.
+The tests parse the level files, check the dwell timer, and play "A Rolling Start" through to the win, then stop and confirm the ball is back where you placed it.

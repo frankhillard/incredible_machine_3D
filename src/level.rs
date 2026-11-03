@@ -86,14 +86,16 @@ pub fn builtin_levels() -> Vec<Level> {
             .expect("rolling_start.ron"),
         ron::from_str(include_str!("../assets/levels/across_the_gap.ron"))
             .expect("across_the_gap.ron"),
+        ron::from_str(include_str!("../assets/levels/bounce_the_gap.ron"))
+            .expect("bounce_the_gap.ron"),
     ]
 }
 
-pub fn empty_shelf() -> [u32; 4] {
-    [0; 4]
+pub fn empty_shelf() -> [u32; PartKind::ALL.len()] {
+    [0; PartKind::ALL.len()]
 }
 
-pub fn shelf_from(level: &Level) -> [u32; 4] {
+pub fn shelf_from(level: &Level) -> [u32; PartKind::ALL.len()] {
     let mut remaining = empty_shelf();
     for item in &level.inventory {
         remaining[item.kind.slot()] += item.count;
@@ -257,9 +259,11 @@ mod tests {
     #[test]
     fn both_level_files_parse() {
         let levels = builtin_levels();
-        assert_eq!(levels.len(), 2);
+        assert_eq!(levels.len(), 3);
         assert_eq!(levels[0].name, "A Rolling Start");
         assert_eq!(levels[1].name, "Across the Gap");
+        assert_eq!(levels[2].name, "Bounce the Gap");
+        assert!(levels[2].inventory.iter().any(|item| item.kind == PartKind::Spring));
         assert!(levels[0].goal.hold_secs >= 4.0);
         assert_eq!(levels[0].goal.kind, PartKind::Ball);
         assert_eq!(levels[1].goal.kind, PartKind::Ball);

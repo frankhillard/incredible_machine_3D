@@ -290,4 +290,69 @@ mod play_test {
         );
         assert!(last.y > 2.2, "ball fell off the ramp early at {last:?}");
     }
+
+    #[test]
+    fn a_ball_dropped_on_a_spring_bounces() {
+        let mut app = test_app();
+        let spring_y = 12.0;
+        let start_y = 13.4;
+        app.insert_resource(Scripted(vec![
+            Placement {
+                kind: PartKind::Spring,
+                position: [0.0, spring_y, 0.25],
+                rotation_z: 0.0,
+                sticky: true,
+            },
+            Placement {
+                kind: PartKind::Ball,
+                position: [0.0, start_y, 0.25],
+                rotation_z: 0.0,
+                sticky: false,
+            },
+        ]));
+        app.finish();
+        app.cleanup();
+        app.update();
+
+        let spring_material = app.world().resource::<Palette>().spring.clone();
+        let mut materials = app.world_mut().query::<(&Part, &MeshMaterial3d<StandardMaterial>)>();
+        let painted = materials
+            .iter(app.world())
+            .find(|(part, _)| part.kind == PartKind::Spring)
+            .map(|(_, material)| material.0.clone())
+            .expect("the spring should spawn");
+        assert_eq!(painted, spring_material);
+        let color = app
+            .world()
+            .resource::<Assets<StandardMaterial>>()
+            .get(&spring_material)
+            .expect("spring material")
+            .base_color
+            .to_srgba();
+        assert!(
+            (color.red - color.green).abs() < 0.08 && (color.green - color.blue).abs() < 0.08,
+            "spring should be gray, got {color:?}"
+        );
+        assert!(color.red < 0.75 && color.red > 0.35, "spring gray is {color:?}");
+
+        app.world_mut().resource_mut::<Time<Physics>>().unpause();
+        let mut lowest = start_y;
+        let mut highest_after = 0.0_f32;
+        for _ in 0..180 {
+            app.update();
+            let y = ball_translation(&mut app).expect("ball").y;
+            lowest = lowest.min(y);
+            if lowest < start_y - 0.5 {
+                highest_after = highest_after.max(y);
+            }
+        }
+        assert!(
+            lowest < spring_y + 0.55,
+            "ball never reached the spring, lowest {lowest}"
+        );
+        assert!(
+            highest_after > lowest + 0.45,
+            "ball reached {lowest} and only came back to {highest_after}"
+        );
+    }
 }

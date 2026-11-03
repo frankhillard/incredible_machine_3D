@@ -18,7 +18,7 @@ pub struct Selection(pub Option<Entity>);
 
 #[derive(Resource)]
 pub struct Shelf {
-    pub remaining: [u32; 4],
+    pub remaining: [u32; crate::parts::PartKind::ALL.len()],
     pub armed: Option<crate::parts::PartKind>,
     pub tilt: f32,
 }
@@ -26,7 +26,7 @@ pub struct Shelf {
 impl Default for Shelf {
     fn default() -> Self {
         Self {
-            remaining: [0; 4],
+            remaining: [0; crate::parts::PartKind::ALL.len()],
             armed: None,
             tilt: 0.0,
         }

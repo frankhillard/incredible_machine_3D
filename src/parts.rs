@@ -11,14 +11,16 @@ pub enum PartKind {
     Block,
     Plank,
     Ball,
+    Spring,
 }
 
 impl PartKind {
-    pub const ALL: [PartKind; 4] = [
+    pub const ALL: [PartKind; 5] = [
         PartKind::Board,
         PartKind::Block,
         PartKind::Plank,
         PartKind::Ball,
+        PartKind::Spring,
     ];
 
     pub fn slot(self) -> usize {
@@ -27,6 +29,7 @@ impl PartKind {
             PartKind::Block => 1,
             PartKind::Plank => 2,
             PartKind::Ball => 3,
+            PartKind::Spring => 4,
         }
     }
 
@@ -36,6 +39,7 @@ impl PartKind {
             PartKind::Block => "Block",
             PartKind::Plank => "Plank",
             PartKind::Ball => "Ball",
+            PartKind::Spring => "Spring",
         }
     }
 
@@ -80,6 +84,16 @@ impl PartKind {
                 sticky_default: false,
                 linear_damping: 0.04,
                 angular_damping: 0.2,
+            },
+            PartKind::Spring => PartSpec {
+                kind: self,
+                size: Vec3::new(0.5, 0.12, 0.5),
+                friction: 0.2,
+                restitution: 0.92,
+                mass: 2.0,
+                sticky_default: true,
+                linear_damping: 0.08,
+                angular_damping: 0.5,
             },
         }
     }
@@ -175,7 +189,7 @@ pub fn spawn_part(
         Position(spawn.position),
         Rotation(rotation),
         Friction::new(spawn.spec.friction),
-        Restitution::new(spawn.spec.restitution),
+        restitution_for(spawn.spec),
         Mass(spawn.spec.mass),
         LinearVelocity::ZERO,
         AngularVelocity::ZERO,
@@ -190,6 +204,17 @@ fn mesh_for(meshes: &mut Assets<Mesh>, spec: &PartSpec) -> Handle<Mesh> {
         meshes.add(Sphere::new(spec.size.x * 0.5))
     } else {
         meshes.add(Cuboid::new(spec.size.x, spec.size.y, spec.size.z))
+    }
+}
+
+fn restitution_for(spec: &PartSpec) -> Restitution {
+    let restitution = Restitution::new(spec.restitution);
+    if spec.kind == PartKind::Spring {
+        // A ball's own restitution is nearly zero. Max keeps the spring's
+        // bounce instead of averaging it away.
+        restitution.with_combine_rule(CoefficientCombine::Max)
+    } else {
+        restitution
     }
 }
 

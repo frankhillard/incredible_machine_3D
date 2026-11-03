@@ -8,6 +8,7 @@ pub struct Palette {
     pub block: Handle<StandardMaterial>,
     pub plank: Handle<StandardMaterial>,
     pub ball: Handle<StandardMaterial>,
+    pub spring: Handle<StandardMaterial>,
     pub selected: Handle<StandardMaterial>,
     pub ghost: Handle<StandardMaterial>,
     pub frame: Handle<StandardMaterial>,
@@ -22,6 +23,7 @@ impl Palette {
             crate::parts::PartKind::Block => self.block.clone(),
             crate::parts::PartKind::Plank => self.plank.clone(),
             crate::parts::PartKind::Ball => self.ball.clone(),
+            crate::parts::PartKind::Spring => self.spring.clone(),
         }
     }
 }
@@ -48,6 +50,12 @@ pub fn setup_palette(
             base_color: Color::srgb(0.89, 0.29, 0.24),
             perceptual_roughness: 0.32,
             metallic: 0.04,
+            ..default()
+        }),
+        spring: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.58, 0.60, 0.62),
+            perceptual_roughness: 0.38,
+            metallic: 0.72,
             ..default()
         }),
         selected: materials.add(StandardMaterial {
