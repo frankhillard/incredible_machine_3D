@@ -1,12 +1,12 @@
 use bevy::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::goal::{GoalClock, GoalZone};
 use crate::parts::{pin_rope_end, spawn_part, spawn_rope_between, PartKind, PartSpec, SpawnPart};
 
 pub const LANE_Z: f32 = 0.25;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Level {
     pub name: String,
     pub hint: String,
@@ -15,7 +15,7 @@ pub struct Level {
     pub inventory: Vec<InventoryDef>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GoalDef {
     pub kind: PartKind,
     #[serde(default = "default_hold")]
@@ -34,27 +34,27 @@ fn default_speed() -> f32 {
     0.8
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FixtureDef {
     pub kind: PartKind,
     /// Center of a normal part. Omitted for a rope, which is placed by [`Self::ends`].
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_array")]
     pub position: [f32; 3],
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
     pub rotation_x: f32,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
     pub rotation_y: f32,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
     pub rotation_z: f32,
     /// The two end-link positions of a rope. Length and direction follow this
     /// segment; `size.y` is still the rope diameter. Left at the origin when
     /// the part is not a rope.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_ends")]
     pub ends: [[f32; 3]; 2],
     pub size: [f32; 3],
     pub friction: f32,
     pub restitution: f32,
-    #[serde(default = "default_sticky")]
+    #[serde(default = "default_sticky", skip_serializing_if = "is_default_sticky")]
     pub sticky: bool,
 }
 
@@ -62,7 +62,23 @@ fn default_sticky() -> bool {
     true
 }
 
-#[derive(Clone, Debug, Deserialize)]
+fn is_zero_f32(value: &f32) -> bool {
+    value.abs() < 1e-6
+}
+
+fn is_zero_array(value: &[f32; 3]) -> bool {
+    value.iter().all(is_zero_f32)
+}
+
+fn is_zero_ends(value: &[[f32; 3]; 2]) -> bool {
+    value.iter().all(is_zero_array)
+}
+
+fn is_default_sticky(value: &bool) -> bool {
+    *value
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InventoryDef {
     pub kind: PartKind,
     pub count: u32,
@@ -99,6 +115,7 @@ impl Campaign {
 pub struct LevelOps {
     pub reload: bool,
     pub go_to: Option<usize>,
+    pub save: bool,
 }
 
 pub fn builtin_levels() -> Vec<Level> {
@@ -114,7 +131,84 @@ pub fn builtin_levels() -> Vec<Level> {
         ron::from_str(include_str!("../assets/levels/level3.ron")).expect("level3.ron"),
         ron::from_str(include_str!("../assets/levels/level4.ron")).expect("level4.ron"),
         ron::from_str(include_str!("../assets/levels/level5.ron")).expect("level5.ron"),
+        ron::from_str(include_str!("../assets/levels/level6.ron")).expect("level6.ron"),
     ]
+}
+
+/// The level as it stands in edit mode: the original pieces, the parts you
+/// placed, and the counts still on the shelf.
+pub fn snapshot_level(
+    level: &Level,
+    remaining: &[u32],
+    placed: impl IntoIterator<Item = FixtureDef>,
+) -> Level {
+    let mut fixtures = level.fixtures.clone();
+    fixtures.extend(placed);
+    let inventory = PartKind::ALL
+        .into_iter()
+        .filter(|kind| remaining.get(kind.slot()).copied().unwrap_or(0) > 0)
+        .map(|kind| InventoryDef {
+            kind,
+            count: remaining[kind.slot()],
+        })
+        .collect();
+    Level {
+        name: level.name.clone(),
+        hint: level.hint.clone(),
+        goal: level.goal.clone(),
+        fixtures,
+        inventory,
+    }
+}
+
+pub fn level_ron(level: &Level) -> Result<String, String> {
+    ron::ser::to_string_pretty(level, ron::ser::PrettyConfig::default())
+        .map_err(|err| err.to_string())
+}
+
+/// A shelf part written the same way a level file describes a fixture.
+pub fn fixture_from_placement(
+    kind: PartKind,
+    sticky: bool,
+    translation: Vec3,
+    rotation: Quat,
+    far_end: Option<Vec3>,
+) -> FixtureDef {
+    let spec = kind.spec();
+    let (rotation_x, rotation_y, rotation_z) = rotation.to_euler(EulerRot::XYZ);
+    let rope = kind == PartKind::Rope;
+    let ends = match far_end {
+        Some(far) if rope => [translation.to_array(), far.to_array()],
+        _ => [[0.0; 3]; 2],
+    };
+    FixtureDef {
+        kind,
+        position: if rope && far_end.is_some() {
+            [0.0; 3]
+        } else {
+            translation.to_array()
+        },
+        rotation_x: if rope && far_end.is_some() {
+            0.0
+        } else {
+            rotation_x
+        },
+        rotation_y: if rope && far_end.is_some() {
+            0.0
+        } else {
+            rotation_y
+        },
+        rotation_z: if rope && far_end.is_some() {
+            0.0
+        } else {
+            rotation_z
+        },
+        ends,
+        size: spec.size.to_array(),
+        friction: spec.friction,
+        restitution: spec.restitution,
+        sticky,
+    }
 }
 
 pub fn empty_shelf() -> [u32; PartKind::ALL.len()] {
@@ -521,9 +615,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_saved_level_keeps_the_goal_the_shelf_and_the_parts_you_placed() {
+        let level = &builtin_levels()[0];
+        let placed = fixture_from_placement(
+            PartKind::Spring,
+            true,
+            Vec3::new(1.25, 2.5, 0.25),
+            Quat::from_rotation_z(-0.2),
+            None,
+        );
+        let rope = fixture_from_placement(
+            PartKind::Rope,
+            false,
+            Vec3::new(-1.0, 4.0, 0.25),
+            Quat::IDENTITY,
+            Some(Vec3::new(1.0, 3.0, 0.25)),
+        );
+        let mut remaining = empty_shelf();
+        remaining[PartKind::Board.slot()] = 2;
+        let snapshot = snapshot_level(level, &remaining, [placed, rope]);
+        let text = level_ron(&snapshot).expect("ron");
+        let parsed: Level = ron::from_str(&text).expect("saved level should load");
+        assert_eq!(parsed.name, level.name);
+        assert_eq!(parsed.goal.center, level.goal.center);
+        assert_eq!(parsed.fixtures.len(), level.fixtures.len() + 2);
+        let spring = parsed
+            .fixtures
+            .iter()
+            .find(|fixture| {
+                fixture.kind == PartKind::Spring && (fixture.position[0] - 1.25).abs() < 1e-3
+            })
+            .expect("placed spring");
+        assert!((spring.position[0] - 1.25).abs() < 1e-4);
+        assert!(spring.sticky);
+        assert!((spring.size[0] - PartKind::Spring.spec().size.x).abs() < 1e-4);
+        let saved_rope = parsed
+            .fixtures
+            .iter()
+            .find(|fixture| fixture.kind == PartKind::Rope)
+            .expect("placed rope");
+        assert_eq!(saved_rope.position, [0.0; 3]);
+        assert!((saved_rope.ends[0][0] + 1.0).abs() < 1e-4);
+        assert!((saved_rope.ends[1][0] - 1.0).abs() < 1e-4);
+        assert!(!saved_rope.sticky);
+        assert!(parsed
+            .inventory
+            .iter()
+            .any(|item| item.kind == PartKind::Board && item.count == 2));
+    }
+
+    #[test]
     fn both_level_files_parse() {
         let levels = builtin_levels();
-        assert_eq!(levels.len(), 8);
+        assert_eq!(levels.len(), 9);
         assert_eq!(levels[0].name, "A Rolling Start");
         assert_eq!(levels[1].name, "Across the Gap");
         assert_eq!(levels[2].name, "Bounce the Gap");
@@ -653,6 +797,13 @@ mod tests {
             .expect("level 5 starts with a rope");
         assert_eq!(rope.ends[0], [-2.5151, 5.3935, 0.25]);
         assert_eq!(rope.ends[1], [-3.2014, 4.900, 0.25]);
+
+        // Level 6
+        assert_eq!(levels[8].name, "Level 6");
+        assert!(levels[8]
+            .inventory
+            .iter()
+            .any(|item| item.kind == PartKind::Spring && item.count == 3));
 
         // Bounce the Gap
         assert!(levels[2]

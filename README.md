@@ -37,6 +37,7 @@ Open [http://localhost:8080](http://localhost:8080). The page is `index.html`, a
 - **Play** starts the physics. Placement and the property panel turn off until **Stop**.
 - **Stop** puts every part back where you set it and clears the timer.
 - **Reset** clears the parts you placed and reloads the level.
+- **Save** is available while you are editing. It asks where to write a `.ron` file of the goal, the fixed pieces, the parts you placed, and the counts left on the shelf. It is off while the machine is running.
 - Click a shelf part, then click the scene to place it. A click on the fixed ramp or another piece sets the part on that slope. Click a placed part to select it.
 - The side panel edits position, rotation around X, Y, and Z, and stickiness. Sticky parts are nailed down and do not tumble. Delete removes the selected part and returns it to the shelf.
 - A selected shelf part shows three axis arrows. Click one. Scroll slides the part along that axis. Ctrl+scroll turns it around that axis.

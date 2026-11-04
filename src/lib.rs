@@ -30,6 +30,7 @@ pub fn run() {
             EguiPlugin::default(),
         ));
     sim::add_sim_systems(&mut app);
+    app.add_systems(Update, ui::save_level_file.after(sim::apply_level_ops));
     app.init_resource::<edit::AxisGizmo>()
         .add_systems(Startup, (scene::setup_camera, edit::configure_gizmos))
         .add_systems(OnEnter(GameState::Playing), edit::clear_axis_gizmo)
@@ -204,6 +205,7 @@ mod play_test {
         app.insert_resource(level::LevelOps {
             go_to: Some(3),
             reload: false,
+            save: false,
         });
         app.finish();
         app.cleanup();
@@ -684,6 +686,7 @@ mod play_test {
         app.insert_resource(level::LevelOps {
             go_to: Some(5),
             reload: false,
+            save: false,
         });
         app.finish();
         app.cleanup();
@@ -745,6 +748,7 @@ mod play_test {
         app.insert_resource(level::LevelOps {
             go_to: Some(7),
             reload: false,
+            save: false,
         });
         app.finish();
         app.cleanup();

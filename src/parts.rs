@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use crate::level::LevelObject;
 use crate::scene::Palette;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PartKind {
     Board,

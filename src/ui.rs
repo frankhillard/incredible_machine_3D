@@ -99,6 +99,9 @@ pub fn draw_ui(
             if ui.button("Reset").clicked() {
                 ops.reload = true;
             }
+            if ui.add_enabled(editing, egui::Button::new("Save")).clicked() {
+                ops.save = true;
+            }
             ui.separator();
             if ui
                 .add_enabled(editing, egui::Button::new("Previous"))
@@ -297,6 +300,112 @@ pub fn draw_ui(
 
     ui_pointer.blocks = ctx.is_pointer_over_egui() || ctx.egui_wants_pointer_input();
     ui_pointer.keys = ctx.egui_wants_keyboard_input();
+}
+
+pub fn save_level_file(
+    state: Res<State<GameState>>,
+    mut ops: ResMut<LevelOps>,
+    campaign: Res<Campaign>,
+    shelf: Res<Shelf>,
+    parts: Query<(Entity, &Part, &Transform), With<PlayerPart>>,
+    links: Query<(&ChainLink, &Transform)>,
+) {
+    if !ops.save {
+        return;
+    }
+    ops.save = false;
+    if *state.get() != GameState::Editing {
+        return;
+    }
+    let placed = parts.iter().map(|(entity, part, transform)| {
+        let far = links.iter().find_map(|(link, link_transform)| {
+            (link.root == entity && link.end).then_some(link_transform.translation)
+        });
+        crate::level::fixture_from_placement(
+            part.kind,
+            part.sticky,
+            transform.translation,
+            transform.rotation,
+            far,
+        )
+    });
+    let snapshot = crate::level::snapshot_level(campaign.current(), &shelf.remaining, placed);
+    let text = match crate::level::level_ron(&snapshot) {
+        Ok(text) => text,
+        Err(err) => {
+            error!("could not write the level file: {err}");
+            return;
+        }
+    };
+    if let Err(err) = prompt_save(&suggested_ron_name(&snapshot.name), &text) {
+        error!("could not save the level: {err}");
+    }
+}
+
+fn suggested_ron_name(name: &str) -> String {
+    let mut file = String::new();
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            file.push(ch.to_ascii_lowercase());
+        } else if (ch.is_whitespace() || ch == '-') && !file.ends_with('_') {
+            file.push('_');
+        }
+    }
+    let file = file.trim_matches('_');
+    if file.is_empty() {
+        "level.ron".into()
+    } else {
+        format!("{file}.ron")
+    }
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn prompt_save(file_name: &str, contents: &str) -> Result<(), String> {
+    let Some(mut path) = rfd::FileDialog::new()
+        .set_title("Save level")
+        .add_filter("Level", &["ron"])
+        .set_file_name(file_name)
+        .save_file()
+    else {
+        return Ok(());
+    };
+    write_ron(path, contents)
+}
+
+#[cfg(target_os = "linux")]
+fn prompt_save(file_name: &str, contents: &str) -> Result<(), String> {
+    let output = std::process::Command::new("zenity")
+        .args([
+            "--file-selection",
+            "--save",
+            "--confirm-overwrite",
+            "--title=Save level",
+            "--file-filter=Level | *.ron",
+        ])
+        .arg(format!("--filename={file_name}"))
+        .output()
+        .map_err(|_| "Install zenity to choose where the level file is saved.".to_string())?;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return if err.is_empty() { Ok(()) } else { Err(err) };
+    }
+    let chosen = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if chosen.is_empty() {
+        return Ok(());
+    }
+    write_ron(chosen.into(), contents)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+fn prompt_save(_file_name: &str, _contents: &str) -> Result<(), String> {
+    Err("Save the level from the desktop build, which can ask for a file path.".into())
+}
+
+fn write_ron(mut path: std::path::PathBuf, contents: &str) -> Result<(), String> {
+    if path.extension().is_none() {
+        path.set_extension("ron");
+    }
+    std::fs::write(&path, contents).map_err(|err| err.to_string())
 }
 
 fn drag_angle(ui: &mut egui::Ui, axis: &str, degrees: &mut f32) -> bool {

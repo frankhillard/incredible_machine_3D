@@ -48,6 +48,9 @@ ron = "0.10"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 avian3d = { version = "0.8", default-features = false, features = ["parallel"] }
 
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+rfd = "0.15"
+
 [profile.dev]
 opt-level = 1
 
