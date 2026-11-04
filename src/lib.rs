@@ -27,20 +27,29 @@ pub fn run() {
         }))
         .add_plugins((PhysicsPlugins::default(), EguiPlugin::default()));
     sim::add_sim_systems(&mut app);
-    app        .init_resource::<edit::AxisGizmo>()
+    app.init_resource::<edit::AxisGizmo>()
         .add_systems(Startup, (scene::setup_camera, edit::configure_gizmos))
         .add_systems(OnEnter(GameState::Playing), edit::clear_axis_gizmo)
         .add_systems(
             Update,
             (
-                (edit::edit_keys, edit::gizmo_scroll, edit::orbit_camera, edit::draw_axes).chain(),
+                (
+                    edit::edit_keys,
+                    edit::gizmo_scroll,
+                    edit::orbit_camera,
+                    edit::draw_axes,
+                )
+                    .chain(),
                 edit::unbury_balls,
                 edit::sync_ghost,
                 edit::delete_selected,
                 edit::highlight_selection,
             ),
         )
-        .add_systems(bevy_egui::EguiPrimaryContextPass, (ui::draw_ui, edit::pointer).chain())
+        .add_systems(
+            bevy_egui::EguiPrimaryContextPass,
+            (ui::draw_ui, edit::pointer).chain(),
+        )
         .run();
 }
 
@@ -49,7 +58,7 @@ mod play_test {
     use super::*;
     use crate::goal::GoalClock;
     use crate::level::{self, Placement};
-    use crate::parts::{Part, PartKind};
+    use crate::parts::{ChainLink, Fixture, Part, PartKind, PlayerPart, RopeJoint};
     use crate::scene::Palette;
     use crate::sim::PlaySnapshot;
     use bevy::time::TimeUpdateStrategy;
@@ -83,12 +92,12 @@ mod play_test {
             TransformPlugin,
             bevy::state::app::StatesPlugin,
         ))
-            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
-                1.0 / 60.0,
-            )))
-            .init_resource::<Assets<Mesh>>()
-            .init_resource::<Assets<StandardMaterial>>()
-            .add_plugins(PhysicsPlugins::default());
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+            1.0 / 60.0,
+        )))
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<Assets<StandardMaterial>>()
+        .add_plugins(PhysicsPlugins::default());
         sim::add_sim_systems(&mut app);
         app.add_systems(Update, spawn_scripted.after(sim::apply_level_ops));
         app
@@ -223,7 +232,10 @@ mod play_test {
                 break;
             }
         }
-        assert!(won, "the springs did not land the ball in the basket\n{trace}");
+        assert!(
+            won,
+            "the springs did not land the ball in the basket\n{trace}"
+        );
     }
 
     #[test]
@@ -281,10 +293,7 @@ mod play_test {
             last.x > start.x + 0.08,
             "ball stayed at {last:?} instead of rolling down from {start:?}"
         );
-        assert!(
-            last.y > 7.0,
-            "ball left the board and fell to {last:?}"
-        );
+        assert!(last.y > 7.0, "ball left the board and fell to {last:?}");
     }
 
     #[test]
@@ -374,7 +383,9 @@ mod play_test {
         app.update();
 
         let spring_material = app.world().resource::<Palette>().spring.clone();
-        let mut materials = app.world_mut().query::<(&Part, &MeshMaterial3d<StandardMaterial>)>();
+        let mut materials = app
+            .world_mut()
+            .query::<(&Part, &MeshMaterial3d<StandardMaterial>)>();
         let painted = materials
             .iter(app.world())
             .find(|(part, _)| part.kind == PartKind::Spring)
@@ -392,7 +403,10 @@ mod play_test {
             (color.red - color.green).abs() < 0.08 && (color.green - color.blue).abs() < 0.08,
             "spring should be gray, got {color:?}"
         );
-        assert!(color.red < 0.75 && color.red > 0.35, "spring gray is {color:?}");
+        assert!(
+            color.red < 0.75 && color.red > 0.35,
+            "spring gray is {color:?}"
+        );
 
         app.world_mut().resource_mut::<Time<Physics>>().unpause();
         let mut lowest = start_y;
@@ -413,5 +427,311 @@ mod play_test {
             highest_after > lowest + 0.45,
             "ball reached {lowest} and only came back to {highest_after}"
         );
+    }
+
+    #[test]
+    fn a_pinned_rope_sags_between_its_ends() {
+        let placement = Placement {
+            kind: PartKind::Rope,
+            position: [0.0, 8.0, 0.25],
+            rotation_x: 0.0,
+            rotation_y: 0.0,
+            rotation_z: 0.0,
+            sticky: true,
+        };
+        let mut app = test_app();
+        app.insert_resource(Scripted(vec![placement]));
+        app.finish();
+        app.cleanup();
+        app.update();
+
+        let mut distance_query = app.world_mut().query::<&DistanceJoint>();
+        let distances = distance_query.iter(app.world()).count();
+        let mut socket_query = app.world_mut().query::<&SphericalJoint>();
+        let sockets = socket_query.iter(app.world()).count();
+        assert_eq!(distances, 2, "the two end pairs are distance joints");
+        assert_eq!(sockets, 5, "the interior pairs are spherical joints");
+        assert_eq!(
+            app.world().resource::<SubstepCount>().0,
+            12,
+            "the rope solver should take twelve substeps"
+        );
+
+        let (root, near, far_entity, far) = rope_ends(&mut app);
+        for end in [root, far_entity] {
+            assert_eq!(
+                app.world().get::<RigidBody>(end).copied(),
+                Some(RigidBody::Dynamic),
+                "a rope end stays loose until it is pinned"
+            );
+        }
+        for (end, place) in [(root, near), (far_entity, far)] {
+            let anchor = app
+                .world_mut()
+                .spawn((
+                    RigidBody::Static,
+                    Transform::from_translation(place),
+                    Position(place),
+                    Rotation(Quat::IDENTITY),
+                ))
+                .id();
+            app.world_mut().spawn(
+                SphericalJoint::new(end, anchor)
+                    .with_local_anchor1(Vec3::ZERO)
+                    .with_local_anchor2(Vec3::ZERO),
+            );
+        }
+
+        let start_middle = rope_middle_y(&mut app);
+        app.world_mut()
+            .resource_mut::<NextState<GameState>>()
+            .set(GameState::Playing);
+        for _ in 0..120 {
+            app.update();
+        }
+        let sagged = rope_middle_y(&mut app);
+        assert!(
+            (sagged - start_middle).abs() < 0.08,
+            "a taut rope should stay near the pinned ends, middle went from {start_middle} to {sagged}"
+        );
+
+        let ends = rope_end_ys(&mut app);
+        assert!(
+            ends.iter().all(|y| (y - 8.0).abs() < 0.05),
+            "pinned ends should stay put, got {ends:?}"
+        );
+    }
+
+    #[test]
+    fn dragging_a_rope_end_onto_a_loose_board_pins_that_end() {
+        let rope = Placement {
+            kind: PartKind::Rope,
+            position: [0.0, 12.0, 0.25],
+            rotation_x: 0.0,
+            rotation_y: 0.0,
+            rotation_z: 0.0,
+            sticky: false,
+        };
+        let board = Placement {
+            kind: PartKind::Board,
+            position: [2.2, 12.0, 0.25],
+            rotation_x: 0.0,
+            rotation_y: 0.0,
+            rotation_z: 0.0,
+            sticky: false,
+        };
+        let mut app = test_app();
+        app.insert_resource(Scripted(vec![rope, board]));
+        app.add_systems(Update, drag_the_far_end.after(spawn_scripted));
+        app.finish();
+        app.cleanup();
+        app.update();
+
+        let mut pins = app.world_mut().query::<&RopeJoint>();
+        let pinned: Vec<_> = pins
+            .iter(app.world())
+            .filter_map(|joint| {
+                joint
+                    .host
+                    .map(|host| (joint.pinned_end.expect("pin"), host))
+            })
+            .collect();
+        assert_eq!(pinned.len(), 1, "the end that met the board should pin");
+        let (end, host) = pinned[0];
+        assert_eq!(
+            app.world().get::<Part>(host).map(|part| part.kind),
+            Some(PartKind::Board)
+        );
+        assert_eq!(
+            app.world().get::<RigidBody>(host).copied(),
+            Some(RigidBody::Dynamic),
+            "the pin has to follow a loose part"
+        );
+        assert_eq!(
+            app.world().get::<RigidBody>(end).copied(),
+            Some(RigidBody::Dynamic)
+        );
+        let mut sockets = app.world_mut().query::<&SphericalJoint>();
+        assert!(
+            sockets
+                .iter(app.world())
+                .any(|joint| joint.body1 == end && joint.body2 == host),
+            "the end should be jointed to the board"
+        );
+    }
+
+    fn drag_the_far_end(
+        mut once: Local<bool>,
+        mut commands: Commands,
+        mut parts: Query<
+            (
+                Entity,
+                &mut Transform,
+                &mut Part,
+                Option<&mut Position>,
+                Option<&mut Rotation>,
+            ),
+            (With<PlayerPart>, Without<ChainLink>),
+        >,
+        mut links: Query<
+            (
+                Entity,
+                &ChainLink,
+                &mut Transform,
+                Option<&mut Position>,
+                Option<&mut Rotation>,
+            ),
+            Without<PlayerPart>,
+        >,
+        colliders: Query<&Collider>,
+        fixtures: Query<
+            (Entity, &Transform, &Part),
+            (
+                With<crate::parts::Fixture>,
+                Without<PlayerPart>,
+                Without<ChainLink>,
+            ),
+        >,
+        mut joints: Query<(
+            Entity,
+            &RopeJoint,
+            Option<&mut DistanceJoint>,
+            Option<&mut SphericalJoint>,
+        )>,
+    ) {
+        if *once {
+            return;
+        }
+        *once = true;
+        let Some(root) = parts
+            .iter()
+            .find_map(|(entity, _, part, _, _)| (part.kind == PartKind::Rope).then_some(entity))
+        else {
+            return;
+        };
+        super::edit::shift_rope_end(
+            &mut commands,
+            root,
+            super::edit::RopeEndSide::Far,
+            Vec3::X * 1.4,
+            &mut parts,
+            &mut links,
+            &colliders,
+            &fixtures,
+            &mut joints,
+        );
+    }
+
+    fn rope_ends(app: &mut App) -> (Entity, Vec3, Entity, Vec3) {
+        let mut parts = app.world_mut().query::<(Entity, &Part, &Transform)>();
+        let (root, near) = parts
+            .iter(app.world())
+            .find_map(|(entity, part, transform)| {
+                (part.kind == PartKind::Rope).then_some((entity, transform.translation))
+            })
+            .expect("rope");
+        let mut links = app.world_mut().query::<(Entity, &ChainLink, &Transform)>();
+        let (far_entity, far) = links
+            .iter(app.world())
+            .find_map(|(entity, link, transform)| {
+                (link.root == root && link.end).then_some((entity, transform.translation))
+            })
+            .expect("far end");
+        (root, near, far_entity, far)
+    }
+
+    fn rope_middle_y(app: &mut App) -> f32 {
+        let mut query = app.world_mut().query::<(&ChainLink, &Transform)>();
+        let world = app.world();
+        query
+            .iter(world)
+            .min_by(|(_, a), (_, b)| {
+                a.translation
+                    .x
+                    .abs()
+                    .partial_cmp(&b.translation.x.abs())
+                    .unwrap()
+            })
+            .map(|(_, transform)| transform.translation.y)
+            .expect("rope links")
+    }
+
+    #[test]
+    fn level_3_rope_spans_the_authored_end_joints() {
+        let levels = builtin_levels();
+        let rope = levels[5]
+            .fixtures
+            .iter()
+            .find(|fixture| fixture.kind == PartKind::Rope)
+            .expect("level 3 rope");
+        let ends = rope.ends;
+        let near = Vec3::from_array(ends[0]);
+        let far = Vec3::from_array(ends[1]);
+
+        let mut app = test_app();
+        app.insert_resource(Scripted(Vec::new()));
+        app.insert_resource(level::LevelOps {
+            go_to: Some(5),
+            reload: false,
+        });
+        app.finish();
+        app.cleanup();
+        app.update();
+
+        let mut parts = app.world_mut().query::<(&Part, &Transform, &Fixture)>();
+        let world = app.world();
+        let spawned_near = parts
+            .iter(world)
+            .find(|(part, _, _)| part.kind == PartKind::Rope)
+            .map(|(_, transform, _)| transform.translation)
+            .expect("rope root");
+        assert!(
+            spawned_near.distance(near) < 1e-3,
+            "near end at {spawned_near:?}, expected {near:?}"
+        );
+
+        let mut links = app.world_mut().query::<(&ChainLink, &Transform)>();
+        let world = app.world();
+        let spawned_far = links
+            .iter(world)
+            .find(|(link, _)| link.end)
+            .map(|(_, transform)| transform.translation)
+            .expect("far link");
+        assert!(
+            spawned_far.distance(far) < 1e-3,
+            "far end at {spawned_far:?}, expected {far:?}"
+        );
+
+        let mut pins = app.world_mut().query::<&RopeJoint>();
+        let world = app.world();
+        let hosts: Vec<Entity> = pins.iter(world).filter_map(|joint| joint.host).collect();
+        assert_eq!(hosts.len(), 2, "each end should pin to the part it sits in");
+
+        let mut kinds = app.world_mut().query::<&Part>();
+        let world = app.world();
+        let mut pinned: Vec<PartKind> = hosts
+            .iter()
+            .filter_map(|entity| kinds.get(world, *entity).ok().map(|part| part.kind))
+            .collect();
+        pinned.sort_by_key(|kind| kind.slot());
+        assert_eq!(pinned, vec![PartKind::Block, PartKind::Plank]);
+    }
+
+    fn rope_end_ys(app: &mut App) -> Vec<f32> {
+        let mut query = app.world_mut().query::<(&Part, &Transform)>();
+        let world = app.world();
+        let mut ys = Vec::new();
+        if let Some((_, transform)) = query
+            .iter(world)
+            .find(|(part, _)| part.kind == PartKind::Rope)
+        {
+            ys.push(transform.translation.y);
+        }
+        let mut links = app.world_mut().query::<(&ChainLink, &Transform)>();
+        let world = app.world();
+        if let Some((_, transform)) = links.iter(world).find(|(link, _)| link.end) {
+            ys.push(transform.translation.y);
+        }
+        ys
     }
 }

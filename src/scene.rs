@@ -9,6 +9,7 @@ pub struct Palette {
     pub plank: Handle<StandardMaterial>,
     pub ball: Handle<StandardMaterial>,
     pub spring: Handle<StandardMaterial>,
+    pub rope: Handle<StandardMaterial>,
     pub selected: Handle<StandardMaterial>,
     pub ghost: Handle<StandardMaterial>,
     pub frame: Handle<StandardMaterial>,
@@ -24,6 +25,7 @@ impl Palette {
             crate::parts::PartKind::Plank => self.plank.clone(),
             crate::parts::PartKind::Ball => self.ball.clone(),
             crate::parts::PartKind::Spring => self.spring.clone(),
+            crate::parts::PartKind::Rope => self.rope.clone(),
         }
     }
 }
@@ -31,10 +33,7 @@ impl Palette {
 #[derive(Component)]
 pub struct Scenery;
 
-pub fn setup_palette(
-    mut commands: Commands,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
+pub fn setup_palette(mut commands: Commands, mut materials: ResMut<Assets<StandardMaterial>>) {
     let wood = |materials: &mut Assets<StandardMaterial>, color: Color, rough: f32| {
         materials.add(StandardMaterial {
             base_color: color,
@@ -56,6 +55,11 @@ pub fn setup_palette(
             base_color: Color::srgb(0.58, 0.60, 0.62),
             perceptual_roughness: 0.38,
             metallic: 0.72,
+            ..default()
+        }),
+        rope: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.55, 0.42, 0.26),
+            perceptual_roughness: 0.84,
             ..default()
         }),
         selected: materials.add(StandardMaterial {

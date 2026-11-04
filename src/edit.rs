@@ -5,7 +5,9 @@ use bevy::window::PrimaryWindow;
 
 use crate::goal::GameState;
 use crate::level::{self, Placement, LANE_Z};
-use crate::parts::{Part, PartKind, PlayerPart};
+use crate::parts::{
+    pin_rope_end, ChainLink, Fixture, Part, PartKind, PlayerPart, RopeJoint, ROPE_SLACK,
+};
 use crate::scene::{OrbitCamera, Palette};
 use crate::sim::{write_pose, Selection, Shelf, UiPointer};
 
@@ -43,10 +45,26 @@ impl Axis {
     }
 }
 
+/// Which end of a selected rope the arrow gizmo belongs to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RopeEndSide {
+    Near,
+    Far,
+}
+
 /// The axis arrow the player has picked on the selected shelf part.
 #[derive(Resource, Default)]
 pub struct AxisGizmo {
     pub axis: Option<Axis>,
+    /// Set while the picked arrows sit on a rope end.
+    pub rope_end: Option<RopeEndSide>,
+}
+
+impl AxisGizmo {
+    pub fn clear(&mut self) {
+        self.axis = None;
+        self.rope_end = None;
+    }
 }
 
 pub fn configure_gizmos(mut store: ResMut<bevy::gizmos::config::GizmoConfigStore>) {
@@ -56,7 +74,7 @@ pub fn configure_gizmos(mut store: ResMut<bevy::gizmos::config::GizmoConfigStore
 }
 
 pub fn clear_axis_gizmo(mut gizmo: ResMut<AxisGizmo>) {
-    gizmo.axis = None;
+    gizmo.clear();
 }
 
 /// Slides `pose` along one of its own axes.
@@ -86,7 +104,11 @@ pub fn resting_on(passenger: Vec3, host: Transform, host_half: Vec3, reach: f32)
 }
 
 /// Keeps a loose part glued to a host while that host is tilted or slid in the editor.
-pub fn carried_transform(host_old: Transform, host_new: Transform, passenger: Transform) -> Transform {
+pub fn carried_transform(
+    host_old: Transform,
+    host_new: Transform,
+    passenger: Transform,
+) -> Transform {
     let local_pos = host_old.rotation.inverse() * (passenger.translation - host_old.translation);
     let local_rot = host_old.rotation.inverse() * passenger.rotation;
     let mut updated = passenger;
@@ -104,7 +126,7 @@ fn riding_poses(
             Option<&mut Position>,
             Option<&mut Rotation>,
         ),
-        With<PlayerPart>,
+        (With<PlayerPart>, Without<ChainLink>),
     >,
     host: Entity,
     host_old: Transform,
@@ -123,7 +145,12 @@ fn riding_poses(
         if entity == host || part.sticky {
             continue;
         }
-        if !resting_on(transform.translation, host_old, half, support_reach(part.kind)) {
+        if !resting_on(
+            transform.translation,
+            host_old,
+            half,
+            support_reach(part.kind),
+        ) {
             continue;
         }
         rides.push((entity, carried_transform(host_old, host_new, *transform)));
@@ -140,7 +167,17 @@ pub fn apply_pose(
             Option<&mut Position>,
             Option<&mut Rotation>,
         ),
-        With<PlayerPart>,
+        (With<PlayerPart>, Without<ChainLink>),
+    >,
+    links: &mut Query<
+        (
+            Entity,
+            &ChainLink,
+            &mut Transform,
+            Option<&mut Position>,
+            Option<&mut Rotation>,
+        ),
+        Without<PlayerPart>,
     >,
     entity: Entity,
     pose: Transform,
@@ -150,12 +187,33 @@ pub fn apply_pose(
         Err(_) => return,
     };
     let rides = riding_poses(parts, entity, old, pose);
+    let spin = pose.rotation * old.rotation.inverse();
+    let mut follows = Vec::new();
+    for (link_entity, link, transform, _, _) in links.iter() {
+        if link.root != entity {
+            continue;
+        }
+        let offset = transform.translation - old.translation;
+        follows.push((
+            link_entity,
+            Transform {
+                translation: pose.translation + spin * offset,
+                rotation: spin * transform.rotation,
+                scale: Vec3::ONE,
+            },
+        ));
+    }
     if let Ok((_, mut transform, _, position, rotation)) = parts.get_mut(entity) {
         write_pose(&mut transform, position, rotation, pose);
     }
     for (ride, ride_pose) in rides {
         if let Ok((_, mut transform, _, position, rotation)) = parts.get_mut(ride) {
             write_pose(&mut transform, position, rotation, ride_pose);
+        }
+    }
+    for (link_entity, follow) in follows {
+        if let Ok((_, _, mut transform, position, rotation)) = links.get_mut(link_entity) {
+            write_pose(&mut transform, position, rotation, follow);
         }
     }
 }
@@ -277,21 +335,24 @@ pub fn rest_on_slope(
 
 pub fn unbury_balls(
     state: Res<State<GameState>>,
-    supports: Query<(&Transform, &Collider, &RigidBody), Without<PlayerPart>>,
-    mut balls: Query<(
-        Entity,
-        &mut Transform,
-        &Part,
-        Option<&mut Position>,
-        Option<&mut Rotation>,
-    ), With<PlayerPart>>,
+    supports: Query<(&Transform, &Collider, &RigidBody), (Without<PlayerPart>, Without<ChainLink>)>,
+    mut balls: Query<
+        (
+            Entity,
+            &mut Transform,
+            &Part,
+            Option<&mut Position>,
+            Option<&mut Rotation>,
+        ),
+        With<PlayerPart>,
+    >,
 ) {
     if *state.get() != GameState::Editing {
         return;
     }
     let mut supports = static_cuboids(&supports);
     for (_, transform, part, _, _) in &balls {
-        if part.sticky && part.kind != PartKind::Ball {
+        if part.sticky && part.kind != PartKind::Ball && part.kind != PartKind::Rope {
             supports.push((*transform, part.kind.spec().size * 0.5));
         }
     }
@@ -417,8 +478,7 @@ pub fn orbit_camera(
             let scale = 0.0022 * orbit.radius;
             orbit.focus += (-right * delta.x + up * delta.y) * scale;
         }
-        let axis_handles_scroll =
-            gizmo.axis.is_some() && *state.get() == GameState::Editing;
+        let axis_handles_scroll = gizmo.axis.is_some() && *state.get() == GameState::Editing;
         if !axis_handles_scroll {
             for event in wheel.read() {
                 let lines = match event.unit {
@@ -444,13 +504,28 @@ pub fn edit_keys(
     mut shelf: ResMut<Shelf>,
     selection: Res<Selection>,
     gizmo: Res<AxisGizmo>,
-    mut parts: Query<(
-        Entity,
-        &mut Transform,
-        &mut Part,
-        Option<&mut Position>,
-        Option<&mut Rotation>,
-    ), With<PlayerPart>>,
+    mut commands: Commands,
+    mut parts: Query<
+        (
+            Entity,
+            &mut Transform,
+            &mut Part,
+            Option<&mut Position>,
+            Option<&mut Rotation>,
+        ),
+        (With<PlayerPart>, Without<ChainLink>),
+    >,
+    mut links: Query<
+        (
+            Entity,
+            &ChainLink,
+            &mut Transform,
+            Option<&mut Position>,
+            Option<&mut Rotation>,
+        ),
+        Without<PlayerPart>,
+    >,
+    joints: Query<(Entity, &RopeJoint)>,
 ) {
     if *state.get() != GameState::Editing || ui.keys {
         return;
@@ -479,7 +554,14 @@ pub fn edit_keys(
                 pose
             });
             if let Some(pose) = pose {
-                apply_pose(&mut parts, entity, pose);
+                if parts
+                    .get(entity)
+                    .is_ok_and(|(_, _, part, _, _)| part.kind == PartKind::Rope)
+                {
+                    let pins: Vec<_> = joints.iter().map(|(joint, rope)| (joint, *rope)).collect();
+                    release_rope_pins(&mut commands, entity, &pins);
+                }
+                apply_pose(&mut parts, &mut links, entity, pose);
             }
         } else if shelf.armed.is_some() {
             shelf.tilt += step;
@@ -494,17 +576,42 @@ pub fn gizmo_scroll(
     ui: Res<UiPointer>,
     selection: Res<Selection>,
     mut gizmo: ResMut<AxisGizmo>,
-    mut parts: Query<(
+    mut parts: Query<
+        (
+            Entity,
+            &mut Transform,
+            &mut Part,
+            Option<&mut Position>,
+            Option<&mut Rotation>,
+        ),
+        (With<PlayerPart>, Without<ChainLink>),
+    >,
+    supports: Query<(&Transform, &Collider, &RigidBody), (Without<PlayerPart>, Without<ChainLink>)>,
+    mut links: Query<
+        (
+            Entity,
+            &ChainLink,
+            &mut Transform,
+            Option<&mut Position>,
+            Option<&mut Rotation>,
+        ),
+        Without<PlayerPart>,
+    >,
+    mut commands: Commands,
+    colliders: Query<&Collider>,
+    fixtures: Query<
+        (Entity, &Transform, &Part),
+        (With<Fixture>, Without<PlayerPart>, Without<ChainLink>),
+    >,
+    mut joints: Query<(
         Entity,
-        &mut Transform,
-        &mut Part,
-        Option<&mut Position>,
-        Option<&mut Rotation>,
-    ), With<PlayerPart>>,
-    supports: Query<(&Transform, &Collider, &RigidBody), Without<PlayerPart>>,
+        &RopeJoint,
+        Option<&mut DistanceJoint>,
+        Option<&mut SphericalJoint>,
+    )>,
 ) {
     if selection.0.is_none() {
-        gizmo.axis = None;
+        gizmo.clear();
     }
     if *state.get() != GameState::Editing || ui.blocks {
         wheel.clear();
@@ -520,15 +627,35 @@ pub fn gizmo_scroll(
     if lines == 0.0 {
         return;
     }
+    if parts
+        .get(entity)
+        .is_ok_and(|(_, _, part, _, _)| part.kind == PartKind::Rope)
+    {
+        if let Some(side) = gizmo.rope_end {
+            let delta = axis.local() * lines * SLIDE_PER_NOTCH;
+            shift_rope_end(
+                &mut commands,
+                entity,
+                side,
+                delta,
+                &mut parts,
+                &mut links,
+                &colliders,
+                &fixtures,
+                &mut joints,
+            );
+        }
+        return;
+    }
     let mut surfaces = static_cuboids(&supports);
     for (_, transform, part, _, _) in &parts {
-        if part.sticky && part.kind != PartKind::Ball {
+        if part.sticky && part.kind != PartKind::Ball && part.kind != PartKind::Rope {
             surfaces.push((*transform, part.kind.spec().size * 0.5));
         }
     }
     let Some(pose) = (|| {
         let Ok((_, transform, part, _, _)) = parts.get(entity) else {
-            gizmo.axis = None;
+            gizmo.clear();
             return None;
         };
         let part = *part;
@@ -547,7 +674,7 @@ pub fn gizmo_scroll(
     })() else {
         return;
     };
-    apply_pose(&mut parts, entity, pose);
+    apply_pose(&mut parts, &mut links, entity, pose);
 }
 
 pub fn sync_ghost(
@@ -557,7 +684,7 @@ pub fn sync_ghost(
     shelf: Res<Shelf>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<OrbitCamera>>,
-    supports: Query<(&Transform, &Collider, &RigidBody), Without<PlayerPart>>,
+    supports: Query<(&Transform, &Collider, &RigidBody), (Without<PlayerPart>, Without<ChainLink>)>,
     nailed: Query<(&Transform, &Part), With<PlayerPart>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -578,7 +705,7 @@ pub fn sync_ghost(
     };
     let mut surfaces = static_cuboids(&supports);
     for (transform, part) in &nailed {
-        if part.sticky && part.kind != PartKind::Ball {
+        if part.sticky && part.kind != PartKind::Ball && part.kind != PartKind::Rope {
             surfaces.push((*transform, part.kind.spec().size * 0.5));
         }
     }
@@ -613,13 +740,14 @@ pub fn pointer(
     mut gizmo: ResMut<AxisGizmo>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<OrbitCamera>>,
-    supports: Query<(&Transform, &Collider, &RigidBody), Without<PlayerPart>>,
+    supports: Query<(&Transform, &Collider, &RigidBody), (Without<PlayerPart>, Without<ChainLink>)>,
     spatial: SpatialQuery,
     players: Query<(&Transform, &Part), With<PlayerPart>>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     palette: Res<Palette>,
+    links: Query<(Entity, &ChainLink, &Transform)>,
 ) {
     if *state.get() != GameState::Editing || ui.blocks || !mouse.just_pressed(MouseButton::Left) {
         return;
@@ -629,21 +757,28 @@ pub fn pointer(
     };
     if let Some(entity) = selection.0 {
         if let Ok((transform, part)) = players.get(entity) {
-            if let Some(hit) = axis_under_cursor(&windows, &cameras, transform, part.kind.spec().size)
-            {
+            let picked = if part.kind == PartKind::Rope {
+                rope_gizmo_under_cursor(&windows, &cameras, &links, entity, transform.translation)
+                    .map(|(side, hit)| (Some(side), hit, rope_collider_entities(&links, entity)))
+            } else {
+                axis_under_cursor(&windows, &cameras, transform, part.kind.spec().size)
+                    .map(|hit| (None, hit, vec![entity]))
+            };
+            if let Some((side, hit, ends)) = picked {
                 let body = spatial.cast_ray_predicate(
                     origin,
                     direction,
                     80.0,
                     true,
                     &SpatialQueryFilter::default(),
-                    &|candidate| candidate == entity,
+                    &|candidate| ends.contains(&candidate),
                 );
                 let axis_is_in_front = body
                     .map(|body| hit.ray_distance <= body.distance + 0.02)
                     .unwrap_or(true);
                 if axis_is_in_front {
                     gizmo.axis = Some(hit.axis);
+                    gizmo.rope_end = side;
                     return;
                 }
             }
@@ -655,16 +790,21 @@ pub fn pointer(
         80.0,
         true,
         &SpatialQueryFilter::default(),
-        &|entity| players.contains(entity),
+        &|entity| players.contains(entity) || links.contains(entity),
     );
     if let Some(hit) = hit {
-        selection.0 = Some(hit.entity);
-        gizmo.axis = None;
+        // A click on any capsule selects the rope, whose root is the shelf part.
+        let selected = links
+            .get(hit.entity)
+            .map(|(_, link, _)| link.root)
+            .unwrap_or(hit.entity);
+        selection.0 = Some(selected);
+        gizmo.clear();
         shelf.armed = None;
         return;
     }
     selection.0 = None;
-    gizmo.axis = None;
+    gizmo.clear();
     let Some(kind) = shelf.armed else {
         return;
     };
@@ -674,7 +814,7 @@ pub fn pointer(
     }
     let mut surfaces = static_cuboids(&supports);
     for (transform, part) in &players {
-        if part.sticky && part.kind != PartKind::Ball {
+        if part.sticky && part.kind != PartKind::Ball && part.kind != PartKind::Rope {
             surfaces.push((*transform, part.kind.spec().size * 0.5));
         }
     }
@@ -710,6 +850,8 @@ pub fn delete_selected(
     mut selection: ResMut<Selection>,
     mut gizmo: ResMut<AxisGizmo>,
     parts: Query<&Part, With<PlayerPart>>,
+    links: Query<(Entity, &ChainLink)>,
+    joints: Query<(Entity, &RopeJoint)>,
 ) {
     if *state.get() != GameState::Editing || ui.keys {
         return;
@@ -721,24 +863,77 @@ pub fn delete_selected(
         return;
     };
     let Ok(part) = parts.get(entity) else {
-        gizmo.axis = None;
+        gizmo.clear();
         return;
     };
     shelf.remaining[part.kind.slot()] += 1;
-    commands.entity(entity).despawn();
-    gizmo.axis = None;
+    let link_ids: Vec<_> = links
+        .iter()
+        .filter(|(_, link)| link.root == entity)
+        .map(|(link_entity, _)| link_entity)
+        .collect();
+    let joint_ids: Vec<_> = joints
+        .iter()
+        .filter(|(_, joint)| joint.root == entity)
+        .map(|(joint_entity, _)| joint_entity)
+        .collect();
+    despawn_chain(&mut commands, entity, link_ids, joint_ids);
+    gizmo.clear();
+}
+
+pub fn despawn_chain(
+    commands: &mut Commands,
+    root: Entity,
+    links: impl IntoIterator<Item = Entity>,
+    joints: impl IntoIterator<Item = Entity>,
+) {
+    commands.entity(root).despawn();
+    for entity in links {
+        commands.entity(entity).despawn();
+    }
+    for entity in joints {
+        commands.entity(entity).despawn();
+    }
 }
 
 pub fn highlight_selection(
     selection: Res<Selection>,
     palette: Res<Palette>,
-    mut parts: Query<(Entity, &Part, &mut MeshMaterial3d<StandardMaterial>), With<PlayerPart>>,
+    joints: Query<&RopeJoint>,
+    mut parts: Query<
+        (Entity, &Part, &mut MeshMaterial3d<StandardMaterial>),
+        (With<PlayerPart>, Without<ChainLink>),
+    >,
+    mut fixtures: Query<
+        (Entity, &Part, &mut MeshMaterial3d<StandardMaterial>),
+        (With<Fixture>, Without<PlayerPart>, Without<ChainLink>),
+    >,
+    mut links: Query<(&ChainLink, &mut MeshMaterial3d<StandardMaterial>), Without<PlayerPart>>,
 ) {
+    let pinned = |entity: Entity| {
+        joints
+            .iter()
+            .any(|joint| selection.0 == Some(joint.root) && joint.host == Some(entity))
+    };
     for (entity, part, mut material) in &mut parts {
-        material.0 = if selection.0 == Some(entity) {
+        material.0 = if selection.0 == Some(entity) || pinned(entity) {
             palette.selected.clone()
         } else {
             palette.for_kind(part.kind)
+        };
+    }
+    for (entity, part, mut material) in &mut fixtures {
+        material.0 = if pinned(entity) {
+            palette.selected.clone()
+        } else {
+            palette.for_kind(part.kind)
+        };
+    }
+    for (link, mut material) in &mut links {
+        material.0 = if selection.0 == Some(link.root) {
+            palette.selected.clone()
+        } else {
+            palette.rope.clone()
         };
     }
 }
@@ -771,6 +966,7 @@ pub fn draw_axes(
     selection: Res<Selection>,
     gizmo: Res<AxisGizmo>,
     parts: Query<(&Transform, &Part), With<PlayerPart>>,
+    links: Query<(&ChainLink, &Transform)>,
     mut gizmos: Gizmos,
 ) {
     if *state.get() != GameState::Editing {
@@ -782,10 +978,37 @@ pub fn draw_axes(
     let Ok((transform, part)) = parts.get(entity) else {
         return;
     };
-    let size = part.kind.spec().size;
+    if part.kind == PartKind::Rope {
+        let end_size = Vec3::splat(0.16);
+        paint_axes(
+            &mut gizmos,
+            &Transform::from_translation(transform.translation),
+            end_size,
+            gizmo_axis_for(&gizmo, RopeEndSide::Near),
+        );
+        if let Some(far) = far_end_translation(&links, entity) {
+            paint_axes(
+                &mut gizmos,
+                &Transform::from_translation(far),
+                end_size,
+                gizmo_axis_for(&gizmo, RopeEndSide::Far),
+            );
+        }
+        return;
+    }
+    paint_axes(&mut gizmos, transform, part.kind.spec().size, gizmo.axis);
+}
+
+fn gizmo_axis_for(gizmo: &AxisGizmo, side: RopeEndSide) -> Option<Axis> {
+    (gizmo.rope_end == Some(side))
+        .then_some(gizmo.axis)
+        .flatten()
+}
+
+fn paint_axes(gizmos: &mut Gizmos, pose: &Transform, size: Vec3, active: Option<Axis>) {
     for axis in Axis::ALL {
-        let (start, end) = axis_segment(transform, size, axis);
-        let selected = gizmo.axis == Some(axis);
+        let (start, end) = axis_segment(pose, size, axis);
+        let selected = active == Some(axis);
         let end = if selected {
             start + (end - start) * 1.18
         } else {
@@ -795,9 +1018,60 @@ pub fn draw_axes(
     }
 }
 
+fn far_end_translation(links: &Query<(&ChainLink, &Transform)>, root: Entity) -> Option<Vec3> {
+    links.iter().find_map(|(link, transform)| {
+        (link.root == root && link.end).then_some(transform.translation)
+    })
+}
+
+fn rope_collider_entities(
+    links: &Query<(Entity, &ChainLink, &Transform)>,
+    root: Entity,
+) -> Vec<Entity> {
+    let mut bodies = vec![root];
+    for (entity, link, _) in links.iter() {
+        if link.root == root {
+            bodies.push(entity);
+        }
+    }
+    bodies
+}
+
+fn rope_gizmo_under_cursor(
+    windows: &Query<&Window, With<PrimaryWindow>>,
+    cameras: &Query<(&Camera, &GlobalTransform), With<OrbitCamera>>,
+    links: &Query<(Entity, &ChainLink, &Transform)>,
+    root: Entity,
+    near: Vec3,
+) -> Option<(RopeEndSide, AxisHit)> {
+    let size = Vec3::splat(0.16);
+    let near_hit = axis_under_cursor(windows, cameras, &Transform::from_translation(near), size);
+    let far_hit = far_end_translation_from(links, root).and_then(|far| {
+        axis_under_cursor(windows, cameras, &Transform::from_translation(far), size)
+    });
+    match (near_hit, far_hit) {
+        (Some(near_hit), Some(far_hit)) if far_hit.pixels < near_hit.pixels => {
+            Some((RopeEndSide::Far, far_hit))
+        }
+        (Some(near_hit), _) => Some((RopeEndSide::Near, near_hit)),
+        (None, Some(far_hit)) => Some((RopeEndSide::Far, far_hit)),
+        (None, None) => None,
+    }
+}
+
+fn far_end_translation_from(
+    links: &Query<(Entity, &ChainLink, &Transform)>,
+    root: Entity,
+) -> Option<Vec3> {
+    links.iter().find_map(|(_, link, transform)| {
+        (link.root == root && link.end).then_some(transform.translation)
+    })
+}
+
 struct AxisHit {
     axis: Axis,
     ray_distance: f32,
+    pixels: f32,
 }
 
 fn axis_under_cursor(
@@ -831,6 +1105,7 @@ fn axis_under_cursor(
             best = Some(AxisHit {
                 axis,
                 ray_distance: along,
+                pixels,
             });
         }
     }
@@ -912,6 +1187,307 @@ fn wheel_lines(wheel: &mut MessageReader<MouseWheel>) -> f32 {
     lines
 }
 
+pub fn release_rope_pins(commands: &mut Commands, root: Entity, joints: &[(Entity, RopeJoint)]) {
+    for (entity, joint) in joints {
+        if joint.root != root {
+            continue;
+        }
+        if let Some(end) = joint.pinned_end {
+            commands.entity(*entity).despawn();
+            commands.entity(end).remove::<Sensor>();
+        }
+    }
+}
+
+struct HostBody {
+    entity: Entity,
+    transform: Transform,
+    shape: HostShape,
+}
+
+enum HostShape {
+    Cuboid(Vec3),
+    Ball(f32),
+    Capsule { a: Vec3, b: Vec3, radius: f32 },
+}
+
+pub fn shift_rope_end(
+    commands: &mut Commands,
+    root: Entity,
+    side: RopeEndSide,
+    delta: Vec3,
+    parts: &mut Query<
+        (
+            Entity,
+            &mut Transform,
+            &mut Part,
+            Option<&mut Position>,
+            Option<&mut Rotation>,
+        ),
+        (With<PlayerPart>, Without<ChainLink>),
+    >,
+    links: &mut Query<
+        (
+            Entity,
+            &ChainLink,
+            &mut Transform,
+            Option<&mut Position>,
+            Option<&mut Rotation>,
+        ),
+        Without<PlayerPart>,
+    >,
+    colliders: &Query<&Collider>,
+    fixtures: &Query<
+        (Entity, &Transform, &Part),
+        (With<Fixture>, Without<PlayerPart>, Without<ChainLink>),
+    >,
+    joints: &mut Query<(
+        Entity,
+        &RopeJoint,
+        Option<&mut DistanceJoint>,
+        Option<&mut SphericalJoint>,
+    )>,
+) {
+    let Ok((_, near_transform, _, _, _)) = parts.get(root) else {
+        return;
+    };
+    let near0 = near_transform.translation;
+    let Some((far_entity, far0)) = links.iter().find_map(|(entity, link, transform, _, _)| {
+        (link.root == root && link.end).then_some((entity, transform.translation))
+    }) else {
+        return;
+    };
+    let mut near = near0;
+    let mut far = far0;
+    match side {
+        RopeEndSide::Near => near += delta,
+        RopeEndSide::Far => far += delta,
+    }
+    if near.distance(far) < 0.25 {
+        let dir = delta.normalize_or(Vec3::X);
+        match side {
+            RopeEndSide::Near => near = far0 - dir * 0.25,
+            RopeEndSide::Far => far = near0 + dir * 0.25,
+        }
+    }
+    let end_entity = match side {
+        RopeEndSide::Near => root,
+        RopeEndSide::Far => far_entity,
+    };
+    let end_pos = match side {
+        RopeEndSide::Near => near,
+        RopeEndSide::Far => far,
+    };
+
+    let mut hosts = Vec::new();
+    for (entity, transform, _, _, _) in parts.iter() {
+        if entity == root {
+            continue;
+        }
+        push_host(&mut hosts, entity, *transform, colliders);
+    }
+    for (entity, transform, _) in fixtures.iter() {
+        push_host(&mut hosts, entity, *transform, colliders);
+    }
+
+    retie_rope(root, near, far, parts, links, joints);
+
+    let best = hosts
+        .iter()
+        .filter(|host| end_overlaps(end_pos, 0.05, host))
+        .min_by(|left, right| {
+            left.transform
+                .translation
+                .distance(end_pos)
+                .partial_cmp(&right.transform.translation.distance(end_pos))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    let existing = joints.iter().find_map(|(joint_entity, rope, _, _)| {
+        (rope.pinned_end == Some(end_entity)).then_some((joint_entity, rope.host))
+    });
+    if let Some(host) = best {
+        let local = host.transform.rotation.inverse() * (end_pos - host.transform.translation);
+        if let Some((joint_entity, pinned_host)) = existing {
+            if pinned_host == Some(host.entity) {
+                if let Ok((_, _, _, mut spherical)) = joints.get_mut(joint_entity) {
+                    if let Some(spherical) = spherical.as_mut() {
+                        spherical.frame2.anchor = JointAnchor::Local(local);
+                    }
+                }
+            } else {
+                commands.entity(joint_entity).despawn();
+                pin_rope_end(commands, root, end_entity, host.entity, local);
+            }
+        } else {
+            pin_rope_end(commands, root, end_entity, host.entity, local);
+        }
+    } else if let Some((joint_entity, _)) = existing {
+        commands.entity(joint_entity).despawn();
+        commands.entity(end_entity).remove::<Sensor>();
+    }
+}
+
+fn push_host(
+    hosts: &mut Vec<HostBody>,
+    entity: Entity,
+    transform: Transform,
+    colliders: &Query<&Collider>,
+) {
+    let Ok(collider) = colliders.get(entity) else {
+        return;
+    };
+    let shape = collider.shape_scaled();
+    let shape = if let Some(cuboid) = shape.as_cuboid() {
+        let half = cuboid.half_extents;
+        HostShape::Cuboid(Vec3::new(half.x, half.y, half.z))
+    } else if let Some(ball) = shape.as_ball() {
+        HostShape::Ball(ball.radius)
+    } else if let Some(capsule) = shape.as_capsule() {
+        HostShape::Capsule {
+            a: Vec3::new(
+                capsule.segment.a.x,
+                capsule.segment.a.y,
+                capsule.segment.a.z,
+            ),
+            b: Vec3::new(
+                capsule.segment.b.x,
+                capsule.segment.b.y,
+                capsule.segment.b.z,
+            ),
+            radius: capsule.radius,
+        }
+    } else {
+        return;
+    };
+    hosts.push(HostBody {
+        entity,
+        transform,
+        shape,
+    });
+}
+
+fn end_overlaps(end: Vec3, radius: f32, host: &HostBody) -> bool {
+    match host.shape {
+        HostShape::Ball(host_radius) => {
+            end.distance(host.transform.translation) <= host_radius + radius
+        }
+        HostShape::Cuboid(half) => {
+            let local = host.transform.rotation.inverse() * (end - host.transform.translation);
+            let grown = half + Vec3::splat(radius);
+            local.x.abs() <= grown.x && local.y.abs() <= grown.y && local.z.abs() <= grown.z
+        }
+        HostShape::Capsule {
+            a,
+            b,
+            radius: host_radius,
+        } => {
+            let local = host.transform.rotation.inverse() * (end - host.transform.translation);
+            let along = b - a;
+            let length_sq = along.length_squared();
+            let t = if length_sq < 1e-8 {
+                0.0
+            } else {
+                ((local - a).dot(along) / length_sq).clamp(0.0, 1.0)
+            };
+            local.distance(a + along * t) <= host_radius + radius
+        }
+    }
+}
+
+fn retie_rope(
+    root: Entity,
+    near: Vec3,
+    far: Vec3,
+    parts: &mut Query<
+        (
+            Entity,
+            &mut Transform,
+            &mut Part,
+            Option<&mut Position>,
+            Option<&mut Rotation>,
+        ),
+        (With<PlayerPart>, Without<ChainLink>),
+    >,
+    links: &mut Query<
+        (
+            Entity,
+            &ChainLink,
+            &mut Transform,
+            Option<&mut Position>,
+            Option<&mut Rotation>,
+        ),
+        Without<PlayerPart>,
+    >,
+    joints: &mut Query<(
+        Entity,
+        &RopeJoint,
+        Option<&mut DistanceJoint>,
+        Option<&mut SphericalJoint>,
+    )>,
+) {
+    let mut placed = vec![(root, 0u8)];
+    for (entity, link, _, _, _) in links.iter() {
+        if link.root == root {
+            placed.push((entity, link.index));
+        }
+    }
+    placed.sort_by_key(|(_, index)| *index);
+    if placed.len() < 2 {
+        return;
+    }
+    let span = far - near;
+    let length = span.length();
+    if length < 1e-4 {
+        return;
+    }
+    let rotation = Quat::from_rotation_arc(Vec3::Y, span / length);
+    let last = (placed.len() - 1) as f32;
+    let poses: Vec<_> = placed
+        .into_iter()
+        .map(|(entity, index)| {
+            (
+                entity,
+                Transform {
+                    translation: near.lerp(far, index as f32 / last),
+                    rotation,
+                    scale: Vec3::ONE,
+                },
+            )
+        })
+        .collect();
+    for (entity, pose) in poses {
+        if entity == root {
+            if let Ok((_, mut transform, _, position, rotation)) = parts.get_mut(entity) {
+                write_pose(&mut transform, position, rotation, pose);
+            }
+        } else if let Ok((_, _, mut transform, position, rotation)) = links.get_mut(entity) {
+            write_pose(&mut transform, position, rotation, pose);
+        }
+    }
+    let spacing = length / last;
+    let rest = spacing * ROPE_SLACK;
+    let tip = Vec3::Y * (rest * 0.5);
+    let chain: Vec<_> = joints
+        .iter()
+        .filter_map(|(entity, rope, _, _)| {
+            (rope.root == root && rope.pinned_end.is_none()).then_some(entity)
+        })
+        .collect();
+    for entity in chain {
+        let Ok((_, _, mut distance, mut spherical)) = joints.get_mut(entity) else {
+            continue;
+        };
+        if let Some(distance) = distance.as_mut() {
+            distance.limits.min = 0.0;
+            distance.limits.max = spacing;
+        }
+        if let Some(spherical) = spherical.as_mut() {
+            spherical.frame1.anchor = JointAnchor::Local(tip);
+            spherical.frame2.anchor = JointAnchor::Local(-tip);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -926,10 +1502,21 @@ mod tests {
 
     #[test]
     fn slide_follows_the_part_axis_after_it_has_been_turned() {
-        let mut pose = pose_at(Vec3::new(1.0, 2.0, 0.25), Quat::from_rotation_z(std::f32::consts::FRAC_PI_2));
+        let mut pose = pose_at(
+            Vec3::new(1.0, 2.0, 0.25),
+            Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+        );
         slide(&mut pose, Axis::X, 2.0);
-        assert!((pose.translation.x - 1.0).abs() < 1e-4, "{}", pose.translation.x);
-        assert!((pose.translation.y - 4.0).abs() < 1e-4, "{}", pose.translation.y);
+        assert!(
+            (pose.translation.x - 1.0).abs() < 1e-4,
+            "{}",
+            pose.translation.x
+        );
+        assert!(
+            (pose.translation.y - 4.0).abs() < 1e-4,
+            "{}",
+            pose.translation.y
+        );
         assert!((pose.translation.z - 0.25).abs() < 1e-4);
     }
 
@@ -940,7 +1527,10 @@ mod tests {
         spin(&mut pose, Axis::Y, std::f32::consts::FRAC_PI_2);
         assert!(pose.translation.distance(pivot) < 1e-4);
         let pointed = pose.rotation * Vec3::X;
-        assert!(pointed.distance(Vec3::new(0.0, 0.0, -1.0)) < 1e-4, "{pointed:?}");
+        assert!(
+            pointed.distance(Vec3::new(0.0, 0.0, -1.0)) < 1e-4,
+            "{pointed:?}"
+        );
     }
 
     #[test]
@@ -964,7 +1554,10 @@ mod tests {
 
     #[test]
     fn a_turned_part_picks_its_local_axis() {
-        let pose = pose_at(Vec3::new(1.0, 1.0, 0.0), Quat::from_rotation_z(std::f32::consts::FRAC_PI_2));
+        let pose = pose_at(
+            Vec3::new(1.0, 1.0, 0.0),
+            Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+        );
         let size = Vec3::splat(0.2);
         let local_x = axis_segment(&pose, size, Axis::X);
         let aim = (local_x.0 + local_x.1) * 0.5;
@@ -996,10 +1589,7 @@ mod tests {
     #[test]
     fn a_ball_slid_along_the_fixed_ramp_drops_onto_the_slope() {
         let angle = -0.28_f32;
-        let pose = pose_at(
-            Vec3::new(-1.35, 2.8, 0.25),
-            Quat::from_rotation_z(angle),
-        );
+        let pose = pose_at(Vec3::new(-1.35, 2.8, 0.25), Quat::from_rotation_z(angle));
         let half = Vec3::new(3.3, 0.12, 0.5) * 0.5;
         let supports = [(pose, half)];
         let normal = Quat::from_rotation_z(angle) * Vec3::Y;
@@ -1029,10 +1619,7 @@ mod tests {
     #[test]
     fn a_click_on_the_ramp_top_seats_the_ball_on_the_slope() {
         let angle = -0.28_f32;
-        let pose = pose_at(
-            Vec3::new(-1.35, 2.8, 0.25),
-            Quat::from_rotation_z(angle),
-        );
+        let pose = pose_at(Vec3::new(-1.35, 2.8, 0.25), Quat::from_rotation_z(angle));
         let half = Vec3::new(3.3, 0.12, 0.5) * 0.5;
         let normal = Quat::from_rotation_z(angle) * Vec3::Y;
         let top = pose.translation + normal * half.y;
@@ -1050,10 +1637,7 @@ mod tests {
     #[test]
     fn a_click_on_the_ramp_front_still_seats_the_ball_on_top() {
         let angle = -0.28_f32;
-        let pose = pose_at(
-            Vec3::new(-1.35, 2.8, 0.25),
-            Quat::from_rotation_z(angle),
-        );
+        let pose = pose_at(Vec3::new(-1.35, 2.8, 0.25), Quat::from_rotation_z(angle));
         let half = Vec3::new(3.3, 0.12, 0.5) * 0.5;
         let front = pose.translation + Vec3::Z * half.z;
         let seated = point_on_supports(

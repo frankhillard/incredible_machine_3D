@@ -5,7 +5,7 @@ use bevy_egui::{egui, EguiContexts};
 use crate::edit::{self, AxisGizmo};
 use crate::goal::{GameState, GoalClock};
 use crate::level::{Campaign, LevelOps};
-use crate::parts::{Part, PlayerPart};
+use crate::parts::{ChainLink, Part, PlayerPart, RopeJoint};
 use crate::sim::{refund, Selection, Shelf, UiPointer};
 
 pub fn draw_ui(
@@ -21,14 +21,28 @@ pub fn draw_ui(
     mut next: ResMut<NextState<GameState>>,
     mut ui_pointer: ResMut<UiPointer>,
     mut commands: Commands,
-    mut parts: Query<(
-        Entity,
-        &mut Transform,
-        &mut Part,
-        Option<&mut Position>,
-        Option<&mut Rotation>,
-    ), With<PlayerPart>>,
-    supports: Query<(&Transform, &Collider, &RigidBody), Without<PlayerPart>>,
+    mut parts: Query<
+        (
+            Entity,
+            &mut Transform,
+            &mut Part,
+            Option<&mut Position>,
+            Option<&mut Rotation>,
+        ),
+        (With<PlayerPart>, Without<ChainLink>),
+    >,
+    supports: Query<(&Transform, &Collider, &RigidBody), (Without<PlayerPart>, Without<ChainLink>)>,
+    mut links: Query<
+        (
+            Entity,
+            &ChainLink,
+            &mut Transform,
+            Option<&mut Position>,
+            Option<&mut Rotation>,
+        ),
+        Without<PlayerPart>,
+    >,
+    joints: Query<(Entity, &RopeJoint)>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
@@ -86,7 +100,10 @@ pub fn draw_ui(
                 ops.reload = true;
             }
             ui.separator();
-            if ui.add_enabled(editing, egui::Button::new("Previous")).clicked() {
+            if ui
+                .add_enabled(editing, egui::Button::new("Previous"))
+                .clicked()
+            {
                 ops.go_to = Some(campaign.index + campaign.levels.len() - 1);
             }
             if ui.add_enabled(editing, egui::Button::new("Next")).clicked() {
@@ -144,9 +161,11 @@ pub fn draw_ui(
                     .show(&mut viewport, |ui| {
                         ui.heading("Part");
                         ui.label("Level pieces stay put. This one is yours.");
-                        let Some((old_pose, kind, sticky_now)) = parts.get(entity).ok().map(
-                            |(_, transform, part, _, _)| (*transform, part.kind, part.sticky),
-                        ) else {
+                        let Some((old_pose, kind, sticky_now)) = parts
+                            .get(entity)
+                            .ok()
+                            .map(|(_, transform, part, _, _)| (*transform, part.kind, part.sticky))
+                        else {
                             return;
                         };
                         ui.label(kind.label());
@@ -157,8 +176,7 @@ pub fn draw_ui(
                             ));
                         }
                         let mut position_value = old_pose.translation;
-                        let (euler_x, euler_y, euler_z) =
-                            old_pose.rotation.to_euler(EulerRot::XYZ);
+                        let (euler_x, euler_y, euler_z) = old_pose.rotation.to_euler(EulerRot::XYZ);
                         let mut degrees = Vec3::new(
                             euler_x.to_degrees(),
                             euler_y.to_degrees(),
@@ -177,15 +195,23 @@ pub fn draw_ui(
                             turned |= drag_angle(ui, "z", &mut degrees.z);
                         });
                         let mut sticky = sticky_now;
-                        if ui.checkbox(&mut sticky, "Sticky (nailed)").changed() {
+                        if kind == crate::parts::PartKind::Rope {
+                            ui.label("Slide an end's arrows onto a part to pin that end.");
+                        } else if ui.checkbox(&mut sticky, "Sticky (nailed)").changed() {
                             if let Ok((_, _, mut part, _, _)) = parts.get_mut(entity) {
                                 part.sticky = sticky;
                             }
-                            commands.entity(entity).insert(if sticky {
+                            let body = if sticky {
                                 RigidBody::Static
                             } else {
                                 RigidBody::Dynamic
-                            });
+                            };
+                            commands.entity(entity).insert(body);
+                            for (link_entity, link, _, _, _) in &links {
+                                if link.root == entity && link.end {
+                                    commands.entity(link_entity).insert(body);
+                                }
+                            }
                         }
                         if moved || turned {
                             let mut pose = old_pose;
@@ -204,7 +230,10 @@ pub fn draw_ui(
                             if kind == crate::parts::PartKind::Ball && !sticky && moved && !lifted {
                                 let mut surfaces = edit::static_cuboids(&supports);
                                 for (_, transform, part, _, _) in &parts {
-                                    if part.sticky && part.kind != crate::parts::PartKind::Ball {
+                                    if part.sticky
+                                        && part.kind != crate::parts::PartKind::Ball
+                                        && part.kind != crate::parts::PartKind::Rope
+                                    {
                                         surfaces.push((*transform, part.kind.spec().size * 0.5));
                                     }
                                 }
@@ -212,12 +241,29 @@ pub fn draw_ui(
                                 pose.translation =
                                     edit::rest_on_slope(pose.translation, radius, &surfaces, 0.35);
                             }
-                            edit::apply_pose(&mut parts, entity, pose);
+                            if kind == crate::parts::PartKind::Rope {
+                                let pins: Vec<_> = joints
+                                    .iter()
+                                    .map(|(joint_entity, joint)| (joint_entity, *joint))
+                                    .collect();
+                                edit::release_rope_pins(&mut commands, entity, &pins);
+                            }
+                            edit::apply_pose(&mut parts, &mut links, entity, pose);
                         }
                         ui.add_space(8.0);
                         if ui.button("Remove").clicked() {
                             refund(&mut shelf, &Part { kind, sticky });
-                            commands.entity(entity).despawn();
+                            let link_ids: Vec<_> = links
+                                .iter()
+                                .filter(|(_, link, _, _, _)| link.root == entity)
+                                .map(|(link_entity, _, _, _, _)| link_entity)
+                                .collect();
+                            let joint_ids: Vec<_> = joints
+                                .iter()
+                                .filter(|(_, joint)| joint.root == entity)
+                                .map(|(joint_entity, _)| joint_entity)
+                                .collect();
+                            edit::despawn_chain(&mut commands, entity, link_ids, joint_ids);
                             selection.0 = None;
                         }
                     });
@@ -273,18 +319,18 @@ fn drag(ui: &mut egui::Ui, prefix: &str, value: &mut f32) -> bool {
 
 fn style_ui(ctx: &egui::Context) {
     ctx.all_styles_mut(|style| {
-    let cream = egui::Color32::from_rgb(255, 246, 228);
-    let walnut = egui::Color32::from_rgb(90, 59, 36);
-    style.visuals.panel_fill = egui::Color32::from_rgb(44, 27, 18);
-    style.visuals.window_fill = egui::Color32::from_rgb(58, 36, 22);
-    style.visuals.extreme_bg_color = egui::Color32::from_rgb(28, 16, 10);
-    style.visuals.override_text_color = Some(cream);
-    style.visuals.widgets.noninteractive.fg_stroke.color = cream;
-    style.visuals.widgets.inactive.fg_stroke.color = cream;
-    style.visuals.widgets.hovered.fg_stroke.color = cream;
-    style.visuals.widgets.inactive.weak_bg_fill = walnut;
-    style.visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(138, 90, 50);
-    style.visuals.widgets.active.weak_bg_fill = egui::Color32::from_rgb(196, 140, 70);
+        let cream = egui::Color32::from_rgb(255, 246, 228);
+        let walnut = egui::Color32::from_rgb(90, 59, 36);
+        style.visuals.panel_fill = egui::Color32::from_rgb(44, 27, 18);
+        style.visuals.window_fill = egui::Color32::from_rgb(58, 36, 22);
+        style.visuals.extreme_bg_color = egui::Color32::from_rgb(28, 16, 10);
+        style.visuals.override_text_color = Some(cream);
+        style.visuals.widgets.noninteractive.fg_stroke.color = cream;
+        style.visuals.widgets.inactive.fg_stroke.color = cream;
+        style.visuals.widgets.hovered.fg_stroke.color = cream;
+        style.visuals.widgets.inactive.weak_bg_fill = walnut;
+        style.visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(138, 90, 50);
+        style.visuals.widgets.active.weak_bg_fill = egui::Color32::from_rgb(196, 140, 70);
         style.visuals.selection.bg_fill = egui::Color32::from_rgb(225, 177, 90);
     });
 }

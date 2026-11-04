@@ -49,7 +49,12 @@ pub fn watch_goal(
     mut clock: ResMut<GoalClock>,
     mut next: ResMut<NextState<GameState>>,
     zones: Query<(&Transform, &GoalZone)>,
-    parts: Query<(&Part, &Transform, Option<&Position>, Option<&LinearVelocity>)>,
+    parts: Query<(
+        &Part,
+        &Transform,
+        Option<&Position>,
+        Option<&LinearVelocity>,
+    )>,
 ) {
     let Some((zone_transform, zone)) = zones.iter().next() else {
         return;
@@ -59,7 +64,9 @@ pub fn watch_goal(
         if part.kind != clock.kind {
             continue;
         }
-        let point = position.map(|position| position.0).unwrap_or(transform.translation);
+        let point = position
+            .map(|position| position.0)
+            .unwrap_or(transform.translation);
         let speed = velocity.map(|velocity| velocity.length()).unwrap_or(0.0);
         if speed <= clock.max_speed
             && point_in_obb(

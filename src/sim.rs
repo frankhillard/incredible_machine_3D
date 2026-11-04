@@ -102,13 +102,16 @@ pub fn enter_editing(
     mut physics: ResMut<Time<Physics>>,
     mut snapshot: ResMut<PlaySnapshot>,
     mut clock: ResMut<GoalClock>,
-    mut parts: Query<(
-        &mut Transform,
-        Option<&mut Position>,
-        Option<&mut Rotation>,
-        Option<&mut LinearVelocity>,
-        Option<&mut AngularVelocity>,
-    ), With<Part>>,
+    mut parts: Query<
+        (
+            &mut Transform,
+            Option<&mut Position>,
+            Option<&mut Rotation>,
+            Option<&mut LinearVelocity>,
+            Option<&mut AngularVelocity>,
+        ),
+        Or<(With<Part>, With<crate::parts::ChainLink>)>,
+    >,
 ) {
     physics.pause();
     clock.held = 0.0;
@@ -134,12 +137,15 @@ pub fn enter_playing(
     mut physics: ResMut<Time<Physics>>,
     mut snapshot: ResMut<PlaySnapshot>,
     mut clock: ResMut<GoalClock>,
-    mut parts: Query<(
-        Entity,
-        &Transform,
-        Option<&mut Position>,
-        Option<&mut Rotation>,
-    ), With<Part>>,
+    mut parts: Query<
+        (
+            Entity,
+            &Transform,
+            Option<&mut Position>,
+            Option<&mut Rotation>,
+        ),
+        Or<(With<Part>, With<crate::parts::ChainLink>)>,
+    >,
 ) {
     physics.unpause();
     clock.held = 0.0;
@@ -175,6 +181,9 @@ pub fn write_pose(
 pub fn add_sim_systems(app: &mut App) {
     app.init_state::<GameState>()
         .insert_resource(Gravity(Vec3::NEG_Y * 9.81))
+        // A rope is a chain of joints. The default six substeps let the links
+        // drift apart; twelve keeps the sockets and the end distances tight.
+        .insert_resource(SubstepCount(12))
         .init_resource::<PlaySnapshot>()
         .init_resource::<Selection>()
         .init_resource::<Shelf>()
@@ -183,11 +192,23 @@ pub fn add_sim_systems(app: &mut App) {
         .init_resource::<UiPointer>()
         .add_systems(
             Startup,
-            (crate::scene::setup_palette, crate::scene::spawn_frame, load_first_level, pause_physics).chain(),
+            (
+                crate::scene::setup_palette,
+                crate::scene::spawn_frame,
+                load_first_level,
+                pause_physics,
+            )
+                .chain(),
         )
         .add_systems(OnEnter(GameState::Editing), enter_editing)
         .add_systems(OnEnter(GameState::Playing), enter_playing)
-        .add_systems(Update, (apply_level_ops, watch_goal.run_if(in_state(GameState::Playing))));
+        .add_systems(
+            Update,
+            (
+                apply_level_ops,
+                watch_goal.run_if(in_state(GameState::Playing)),
+            ),
+        );
 }
 
 /// Removes one player part and gives it back to the shelf. Used by the property panel.

@@ -40,6 +40,7 @@ Open [http://localhost:8080](http://localhost:8080). The page is `index.html`, a
 - Click a shelf part, then click the scene to place it. A click on the fixed ramp or another piece sets the part on that slope. Click a placed part to select it.
 - The side panel edits position, rotation around X, Y, and Z, and stickiness. Sticky parts are nailed down and do not tumble. Delete removes the selected part and returns it to the shelf.
 - A selected shelf part shows three axis arrows. Click one. Scroll slides the part along that axis. Ctrl+scroll turns it around that axis.
+- A selected rope shows those arrows at each end. Scroll slides that end. If the end meets another part, the part lights up and the end pins to it, loose parts included. Until then the ends hang free.
 - A loose ball sitting on a shelf part stays with that part while you tilt or slide it. Slide the ball along the fixed ramp and it stays on that slope. It rolls when you press **Play**.
 - **Q** and **E** turn the selected part around the picked axis, or around its own Z axis when no arrow is picked. They also tilt the part you are about to place.
 - Right drag orbits the camera. Middle drag pans. Scroll zooms, unless an axis arrow is picked. The camera keeps moving while the machine runs.
@@ -50,7 +51,7 @@ Level pieces that ship with the table cannot be moved. Only the shelf parts can.
 
 Drawing goes through Bevy's wgpu backend: Vulkan on Linux, and WebGL or WebGPU in the browser. That is what uses the GPU, including an NVIDIA card, on both targets.
 
-The physics step is [Avian](https://github.com/avianphysics/avian), running on the CPU. A CUDA solver cannot run inside the web page, and a second solver would make the Linux build and the page disagree. Colliders are cuboids and spheres so a crowded table stays cheap. The native build turns on Avian's parallel solver. The web build leaves that off, because Rayon does not run in the browser.
+The physics step is [Avian](https://github.com/avianphysics/avian), running on the CPU. A CUDA solver cannot run inside the web page, and a second solver would make the Linux build and the page disagree. Colliders are cuboids, spheres, and rope capsules so a crowded table stays cheap. The native build turns on Avian's parallel solver. The web build leaves that off, because Rayon does not run in the browser.
 
 ## Checks
 

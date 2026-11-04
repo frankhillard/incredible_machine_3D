@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use serde::Deserialize;
 
 use crate::goal::{GoalClock, GoalZone};
-use crate::parts::{spawn_part, PartKind, PartSpec, SpawnPart};
+use crate::parts::{pin_rope_end, spawn_part, spawn_rope_between, PartKind, PartSpec, SpawnPart};
 
 pub const LANE_Z: f32 = 0.25;
 
@@ -37,6 +37,8 @@ fn default_speed() -> f32 {
 #[derive(Clone, Debug, Deserialize)]
 pub struct FixtureDef {
     pub kind: PartKind,
+    /// Center of a normal part. Omitted for a rope, which is placed by [`Self::ends`].
+    #[serde(default)]
     pub position: [f32; 3],
     #[serde(default)]
     pub rotation_x: f32,
@@ -44,6 +46,11 @@ pub struct FixtureDef {
     pub rotation_y: f32,
     #[serde(default)]
     pub rotation_z: f32,
+    /// The two end-link positions of a rope. Length and direction follow this
+    /// segment; `size.y` is still the rope diameter. Left at the origin when
+    /// the part is not a rope.
+    #[serde(default)]
+    pub ends: [[f32; 3]; 2],
     pub size: [f32; 3],
     pub friction: f32,
     pub restitution: f32,
@@ -100,11 +107,9 @@ pub fn builtin_levels() -> Vec<Level> {
             .expect("across_the_gap.ron"),
         ron::from_str(include_str!("../assets/levels/bounce_the_gap.ron"))
             .expect("bounce_the_gap.ron"),
-        ron::from_str(include_str!("../assets/levels/level1.ron"))
-            .expect("level1.ron"),
-        ron::from_str(include_str!("../assets/levels/level2.ron"))
-            .expect("level2.ron"),
-        
+        ron::from_str(include_str!("../assets/levels/level1.ron")).expect("level1.ron"),
+        ron::from_str(include_str!("../assets/levels/level2.ron")).expect("level2.ron"),
+        ron::from_str(include_str!("../assets/levels/level3.ron")).expect("level3.ron"),
     ]
 }
 
@@ -200,17 +205,41 @@ pub fn level2_placements(level: &Level) -> [Placement; 4] {
     ]
 }
 
+
+#[cfg(test)]
+pub fn level3_placements(level: &Level) -> [Placement; 2] {
+    let ball = level
+        .fixtures
+        .iter()
+        .find(|fixture| fixture.kind == PartKind::Ball)
+        .expect("level 3 starts with a loose ball");
+    let z = ball.position[2];
+    [
+        Placement {
+            kind: PartKind::Spring,
+            position: [-2.5138, 2.6984, z],
+            rotation_x: 0.0,
+            rotation_y: 0.0,
+            rotation_z: -0.2,
+            sticky: true,
+        },
+        Placement {
+            kind: PartKind::Spring,
+            position: [0.1527, 1.8398, z],
+            rotation_x: 0.0,
+            rotation_y: 0.0,
+            rotation_z: 0.0,
+            sticky: true,
+        },
+    ]
+}
 /// Board and ball that solve "A Rolling Start", derived from that level's ramp and landing.
 #[cfg(test)]
 pub fn rolling_start_placements(level: &Level) -> [Placement; 2] {
     let ramp = level
         .fixtures
         .iter()
-        .max_by(|left, right| {
-            left.rotation_z
-                .abs()
-                .total_cmp(&right.rotation_z.abs())
-        })
+        .max_by(|left, right| left.rotation_z.abs().total_cmp(&right.rotation_z.abs()))
         .expect("rolling start needs a tilted ramp");
     let platform = level
         .fixtures
@@ -291,9 +320,23 @@ pub fn spawn_level_contents(
     palette: &crate::scene::Palette,
     level: &Level,
 ) {
+    let mut hosts = Vec::new();
+    let mut ropes = Vec::new();
     for fixture in &level.fixtures {
         let spec = spec_for_fixture(fixture);
-        spawn_part(
+        if fixture.kind == PartKind::Rope && fixture.ends != [[0.0; 3]; 2] {
+            let near = Vec3::from_array(fixture.ends[0]);
+            let far = Vec3::from_array(fixture.ends[1]);
+            let (root, far_link) = spawn_rope_between(commands, meshes, palette, &spec, near, far);
+            ropes.push(AuthoredRope {
+                root,
+                far_link,
+                near,
+                far,
+            });
+            continue;
+        }
+        let entity = spawn_part(
             commands,
             meshes,
             materials,
@@ -309,18 +352,82 @@ pub fn spawn_level_contents(
                 ghost: false,
             },
         );
+        hosts.push(AnchorHost {
+            entity,
+            position: Vec3::from_array(fixture.position),
+            rotation: Quat::from_euler(
+                EulerRot::XYZ,
+                fixture.rotation_x,
+                fixture.rotation_y,
+                fixture.rotation_z,
+            ),
+            half: Vec3::from_array(fixture.size) * 0.5,
+            ball: fixture.kind == PartKind::Ball,
+        });
+    }
+    for rope in ropes {
+        pin_authored_end(commands, rope.root, rope.root, rope.near, &hosts);
+        pin_authored_end(commands, rope.root, rope.far_link, rope.far, &hosts);
     }
 
     let half = Vec3::from_array(level.goal.half_extents);
     commands.spawn((
         LevelObject,
-        GoalZone {
-            half_extents: half,
-        },
+        GoalZone { half_extents: half },
         Mesh3d(meshes.add(Cuboid::new(half.x * 2.0, half.y * 2.0, half.z * 2.0))),
         MeshMaterial3d(palette.goal.clone()),
         Transform::from_translation(Vec3::from_array(level.goal.center)),
     ));
+}
+
+struct AnchorHost {
+    entity: Entity,
+    position: Vec3,
+    rotation: Quat,
+    half: Vec3,
+    ball: bool,
+}
+
+struct AuthoredRope {
+    root: Entity,
+    far_link: Entity,
+    near: Vec3,
+    far: Vec3,
+}
+
+fn pin_authored_end(
+    commands: &mut Commands,
+    root: Entity,
+    end: Entity,
+    point: Vec3,
+    hosts: &[AnchorHost],
+) {
+    let Some(host) = hosts
+        .iter()
+        .filter(|host| fixture_contains(host, point))
+        .min_by(|left, right| {
+            left.position
+                .distance_squared(point)
+                .partial_cmp(&right.position.distance_squared(point))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+    else {
+        return;
+    };
+    let local = host.rotation.inverse() * (point - host.position);
+    pin_rope_end(commands, root, end, host.entity, local);
+}
+
+fn fixture_contains(host: &AnchorHost, point: Vec3) -> bool {
+    let local = host.rotation.inverse() * (point - host.position);
+    let slop = 0.02;
+    if host.ball {
+        local.length() <= host.half.x + slop
+    } else {
+        local.x.abs() <= host.half.x + slop
+            && local.y.abs() <= host.half.y + slop
+            && local.z.abs() <= host.half.z + slop
+    }
 }
 
 fn spec_for_fixture(fixture: &FixtureDef) -> PartSpec {
@@ -364,15 +471,18 @@ mod tests {
     #[test]
     fn both_level_files_parse() {
         let levels = builtin_levels();
-        assert_eq!(levels.len(), 5);
+        assert_eq!(levels.len(), 6);
         assert_eq!(levels[0].name, "A Rolling Start");
         assert_eq!(levels[1].name, "Across the Gap");
         assert_eq!(levels[2].name, "Bounce the Gap");
-        
+
         // Level 1
         assert_eq!(levels[3].name, "Level 1");
         assert_eq!(levels[3].goal.kind, PartKind::Ball);
-        assert!(!levels[3].inventory.iter().any(|item| item.kind == PartKind::Ball));
+        assert!(!levels[3]
+            .inventory
+            .iter()
+            .any(|item| item.kind == PartKind::Ball));
         let ball = levels[3]
             .fixtures
             .iter()
@@ -388,7 +498,10 @@ mod tests {
         // Level 2
         assert_eq!(levels[4].name, "Level 2");
         assert_eq!(levels[4].goal.kind, PartKind::Ball);
-        assert!(!levels[4].inventory.iter().any(|item| item.kind == PartKind::Ball));
+        assert!(!levels[4]
+            .inventory
+            .iter()
+            .any(|item| item.kind == PartKind::Ball));
         let ball = levels[4]
             .fixtures
             .iter()
@@ -408,13 +521,62 @@ mod tests {
         assert!((pitched.rotation_x - 0.1).abs() < 1e-4);
         assert!(pitched.rotation_y.abs() < 1e-4);
 
+        // Level 3
+        assert_eq!(levels[5].name, "Level 3");
+        assert_eq!(levels[5].goal.kind, PartKind::Ball);
+        assert!(!levels[5]
+            .inventory
+            .iter()
+            .any(|item| item.kind == PartKind::Ball));
+        let ball = levels[5]
+            .fixtures
+            .iter()
+            .find(|item| item.kind == PartKind::Ball)
+            .expect("level 3 starts with a ball");
+        assert!(!ball.sticky);
+        let plank = levels[5]
+            .fixtures
+            .iter()
+            .find(|item| item.kind == PartKind::Plank)
+            .expect("level 3 has a loose plank");
+        assert!(!plank.sticky);
+        assert!((plank.rotation_z + 0.3).abs() < 1e-4);
+        assert!(levels[5]
+            .fixtures
+            .iter()
+            .filter(|item| {
+                item.kind != PartKind::Ball
+                    && item.kind != PartKind::Rope
+                    && item.kind != PartKind::Plank
+            })
+            .all(|item| item.sticky));
+        let rope = levels[5]
+            .fixtures
+            .iter()
+            .find(|item| item.kind == PartKind::Rope)
+            .expect("level 3 starts with a rope");
+        assert_eq!(rope.ends[0], [-2.5151, 5.3935, 0.25]);
+        assert_eq!(rope.ends[1], [-3.7, 4.6268, 0.25]);
+        assert_eq!(rope.rotation_x, 0.0);
+        assert_eq!(rope.rotation_y, 0.0);
+        assert_eq!(rope.rotation_z, 0.0);
+
         // Bounce the Gap
-        assert!(levels[2].inventory.iter().any(|item| item.kind == PartKind::Spring));
+        assert!(levels[2]
+            .inventory
+            .iter()
+            .any(|item| item.kind == PartKind::Spring));
         assert!(levels[0].goal.hold_secs >= 4.0);
         assert_eq!(levels[0].goal.kind, PartKind::Ball);
         assert_eq!(levels[1].goal.kind, PartKind::Ball);
-        assert!(levels[0].inventory.iter().any(|item| item.kind == PartKind::Board));
-        assert!(levels[1].inventory.iter().any(|item| item.kind == PartKind::Ball));
+        assert!(levels[0]
+            .inventory
+            .iter()
+            .any(|item| item.kind == PartKind::Board));
+        assert!(levels[1]
+            .inventory
+            .iter()
+            .any(|item| item.kind == PartKind::Ball));
         assert!(levels[..3]
             .iter()
             .flat_map(|level| &level.fixtures)
@@ -557,6 +719,69 @@ mod tests {
             landing_spring.position[0] > landing_left,
             "the last spring at x={} does not reach the landing",
             landing_spring.position[0]
+        );
+    }
+
+    #[test]
+    fn level_3_solution_puts_the_spring_under_the_ball_and_the_spring_across_the_gap() {
+        let level = &builtin_levels()[5];
+        let [under, across] = level3_placements(level);
+        let ball = level
+            .fixtures
+            .iter()
+            .find(|fixture| fixture.kind == PartKind::Ball)
+            .expect("level 3 starts with a loose ball");
+        assert_eq!(under.kind, PartKind::Spring);
+        assert!(under.sticky);
+        assert_eq!(across.kind, PartKind::Spring);
+        assert!(across.sticky);
+
+        let half = PartKind::Spring.spec().size.x * 0.5;
+        let dir = Vec2::new(under.rotation_z.cos(), under.rotation_z.sin());
+        let along = Vec2::new(
+            ball.position[0] - under.position[0],
+            ball.position[1] - under.position[1],
+        )
+        .dot(dir);
+        assert!(
+            along.abs() <= half,
+            "the first spring is not under the ball, offset {along}"
+        );
+        assert!(under.position[1] < ball.position[1]);
+
+        let high = level
+            .fixtures
+            .iter()
+            .filter(|fixture| {
+                fixture.kind != PartKind::Ball
+                    && fixture.kind != PartKind::Rope
+                    && fixture.kind != PartKind::Spring
+                    && fixture.size[0] > fixture.size[1]
+                    && ball.position[0] >= fixture.position[0] - fixture.size[0] * 0.5
+                    && ball.position[0] <= fixture.position[0] + fixture.size[0] * 0.5
+            })
+            .max_by(|left, right| {
+                let left_top = left.position[1] + left.size[1] * 0.5;
+                let right_top = right.position[1] + right.size[1] * 0.5;
+                left_top.total_cmp(&right_top)
+            })
+            .expect("level 3 needs a high platform");
+        let high_right = high.position[0] + high.size[0] * 0.5;
+        let landing_left = level
+            .fixtures
+            .iter()
+            .filter(|fixture| {
+                fixture.kind != PartKind::Rope
+                    && fixture.position[0] > high_right
+                    && fixture.size[0] > fixture.size[1]
+            })
+            .map(|fixture| fixture.position[0] - fixture.size[0] * 0.5)
+            .min_by(|left, right| left.total_cmp(right))
+            .expect("level 3 needs a landing across the gap");
+        assert!(
+            across.position[0] > high_right && across.position[0] < landing_left,
+            "the spring at x={} is not in the gap {high_right}..{landing_left}",
+            across.position[0]
         );
     }
 }
