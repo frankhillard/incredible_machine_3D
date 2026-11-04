@@ -227,11 +227,11 @@ pub fn draw_ui(
                                 );
                             }
                             let lifted = position_value.y > old_pose.translation.y + 0.001;
-                            if kind == crate::parts::PartKind::Ball && !sticky && moved && !lifted {
+                            if kind.round() && !sticky && moved && !lifted {
                                 let mut surfaces = edit::static_cuboids(&supports);
                                 for (_, transform, part, _, _) in &parts {
                                     if part.sticky
-                                        && part.kind != crate::parts::PartKind::Ball
+                                        && !part.kind.round()
                                         && part.kind != crate::parts::PartKind::Rope
                                     {
                                         surfaces.push((*transform, part.kind.spec().size * 0.5));

@@ -25,7 +25,10 @@ pub fn run() {
             }),
             ..default()
         }))
-        .add_plugins((PhysicsPlugins::default(), EguiPlugin::default()));
+        .add_plugins((
+            PhysicsPlugins::default().with_collision_hooks::<parts::RopeContactHooks>(),
+            EguiPlugin::default(),
+        ));
     sim::add_sim_systems(&mut app);
     app.init_resource::<edit::AxisGizmo>()
         .add_systems(Startup, (scene::setup_camera, edit::configure_gizmos))
@@ -97,7 +100,9 @@ mod play_test {
         )))
         .init_resource::<Assets<Mesh>>()
         .init_resource::<Assets<StandardMaterial>>()
-        .add_plugins(PhysicsPlugins::default());
+        .add_plugins(
+            PhysicsPlugins::default().with_collision_hooks::<crate::parts::RopeContactHooks>(),
+        );
         sim::add_sim_systems(&mut app);
         app.add_systems(Update, spawn_scripted.after(sim::apply_level_ops));
         app
@@ -368,6 +373,7 @@ mod play_test {
                 rotation_y: 0.0,
                 rotation_z: 0.0,
                 sticky: true,
+                ends: [[0.0; 3]; 2],
             },
             Placement {
                 kind: PartKind::Ball,
@@ -376,6 +382,7 @@ mod play_test {
                 rotation_y: 0.0,
                 rotation_z: 0.0,
                 sticky: false,
+                ends: [[0.0; 3]; 2],
             },
         ]));
         app.finish();
@@ -438,6 +445,7 @@ mod play_test {
             rotation_y: 0.0,
             rotation_z: 0.0,
             sticky: true,
+            ends: [[0.0; 3]; 2],
         };
         let mut app = test_app();
         app.insert_resource(Scripted(vec![placement]));
@@ -490,9 +498,10 @@ mod play_test {
             app.update();
         }
         let sagged = rope_middle_y(&mut app);
+        let droop = start_middle - sagged;
         assert!(
-            (sagged - start_middle).abs() < 0.08,
-            "a taut rope should stay near the pinned ends, middle went from {start_middle} to {sagged}"
+            droop > -0.02 && droop < 0.12,
+            "a rope should give a little under its own weight, middle went from {start_middle} to {sagged}"
         );
 
         let ends = rope_end_ys(&mut app);
@@ -511,6 +520,7 @@ mod play_test {
             rotation_y: 0.0,
             rotation_z: 0.0,
             sticky: false,
+            ends: [[0.0; 3]; 2],
         };
         let board = Placement {
             kind: PartKind::Board,
@@ -519,6 +529,7 @@ mod play_test {
             rotation_y: 0.0,
             rotation_z: 0.0,
             sticky: false,
+            ends: [[0.0; 3]; 2],
         };
         let mut app = test_app();
         app.insert_resource(Scripted(vec![rope, board]));
@@ -715,6 +726,69 @@ mod play_test {
             .collect();
         pinned.sort_by_key(|kind| kind.slot());
         assert_eq!(pinned, vec![PartKind::Block, PartKind::Plank]);
+    }
+
+    #[test]
+    fn level_4_weight_hangs_from_the_rope_without_being_thrown() {
+        let levels = builtin_levels();
+        let rope = levels[7]
+            .fixtures
+            .iter()
+            .find(|fixture| fixture.kind == PartKind::Rope)
+            .expect("level 5 rope");
+        let anchor = Vec3::from_array(rope.ends[0]);
+        let start = Vec3::from_array(rope.ends[1]);
+        let reach = anchor.distance(start);
+
+        let mut app = test_app();
+        app.insert_resource(Scripted(Vec::new()));
+        app.insert_resource(level::LevelOps {
+            go_to: Some(7),
+            reload: false,
+        });
+        app.finish();
+        app.cleanup();
+        app.update();
+
+        let mut parts = app.world_mut().query::<(Entity, &Part)>();
+        let weight = parts
+            .iter(app.world())
+            .find_map(|(entity, part)| (part.kind == PartKind::Weight).then_some(entity))
+            .expect("weight");
+        app.world_mut()
+            .resource_mut::<NextState<GameState>>()
+            .set(GameState::Playing);
+        let mut fastest = 0.0_f32;
+        let mut trace = String::new();
+        for frame in 0..180 {
+            app.update();
+            let position = app.world().get::<Transform>(weight).unwrap().translation;
+            let speed = app
+                .world()
+                .get::<LinearVelocity>(weight)
+                .map(|velocity| velocity.length())
+                .unwrap_or(0.0);
+            fastest = fastest.max(speed);
+            if frame % 30 == 0 {
+                trace.push_str(&format!("{frame}: {position:?} speed={speed:.2}\n"));
+            }
+            assert!(
+                (position.z - start.z).abs() < 0.05,
+                "the weight left the lane at {position:?}\n{trace}"
+            );
+            assert!(
+                position.y < anchor.y,
+                "the rope threw the weight above its anchor at {position:?}\n{trace}"
+            );
+            assert!(
+                position.distance(anchor) < reach * 1.25,
+                "the weight escaped the rope at {position:?}\n{trace}"
+            );
+        }
+        assert!(
+            fastest < 4.0,
+            "the weight was kicked to {fastest:.2} m/s\n{trace}"
+        );
     }
 
     fn rope_end_ys(app: &mut App) -> Vec<f32> {

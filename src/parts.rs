@@ -13,16 +13,18 @@ pub enum PartKind {
     Ball,
     Spring,
     Rope,
+    Weight,
 }
 
 impl PartKind {
-    pub const ALL: [PartKind; 6] = [
+    pub const ALL: [PartKind; 7] = [
         PartKind::Board,
         PartKind::Block,
         PartKind::Plank,
         PartKind::Ball,
         PartKind::Spring,
         PartKind::Rope,
+        PartKind::Weight,
     ];
 
     pub fn slot(self) -> usize {
@@ -33,7 +35,13 @@ impl PartKind {
             PartKind::Ball => 3,
             PartKind::Spring => 4,
             PartKind::Rope => 5,
+            PartKind::Weight => 6,
         }
+    }
+
+    /// A ball and a weight are both spheres. `size.x` is the diameter.
+    pub fn round(self) -> bool {
+        matches!(self, PartKind::Ball | PartKind::Weight)
     }
 
     pub fn label(self) -> &'static str {
@@ -44,6 +52,7 @@ impl PartKind {
             PartKind::Ball => "Ball",
             PartKind::Spring => "Spring",
             PartKind::Rope => "Rope",
+            PartKind::Weight => "Weight",
         }
     }
 
@@ -89,6 +98,16 @@ impl PartKind {
                 linear_damping: 0.04,
                 angular_damping: 0.2,
             },
+            PartKind::Weight => PartSpec {
+                kind: self,
+                size: Vec3::splat(0.32),
+                friction: 0.16,
+                restitution: 0.05,
+                mass: 5.0,
+                sticky_default: false,
+                linear_damping: 0.04,
+                angular_damping: 0.2,
+            },
             PartKind::Spring => PartSpec {
                 kind: self,
                 size: Vec3::new(0.5, 0.12, 0.5),
@@ -116,7 +135,7 @@ impl PartKind {
 #[derive(Clone, Copy)]
 pub struct PartSpec {
     pub kind: PartKind,
-    /// Full box size. For a ball, every component is the diameter.
+    /// Full box size. For a ball or a weight, every component is the diameter.
     pub size: Vec3,
     pub friction: f32,
     pub restitution: f32,
@@ -163,6 +182,9 @@ pub struct RopeJoint {
 /// Joint rest length relative to the drawn gap. 1 keeps a pinned rope from
 /// storing a stretch that launches the parts it is tied to.
 pub const ROPE_SLACK: f32 = 1.0;
+
+/// Meters of give per newton. A hard rope tied to a heavy part kicks it around.
+const ROPE_COMPLIANCE: f32 = 0.00015;
 
 /// How many capsules make one rope. Interior sockets are spherical; the two
 /// end connections are distance joints.
@@ -251,7 +273,7 @@ pub fn spawn_part(
 }
 
 fn mesh_for(meshes: &mut Assets<Mesh>, spec: &PartSpec) -> Handle<Mesh> {
-    if spec.kind == PartKind::Ball {
+    if spec.kind.round() {
         meshes.add(Sphere::new(spec.size.x * 0.5))
     } else {
         meshes.add(Cuboid::new(spec.size.x, spec.size.y, spec.size.z))
@@ -314,6 +336,7 @@ pub fn spawn_rope_between(
     spec: &PartSpec,
     near: Vec3,
     far: Vec3,
+    player: bool,
 ) -> (Entity, Entity) {
     let dir = (far - near).try_normalize().unwrap_or(Vec3::X);
     assemble_rope(
@@ -324,7 +347,7 @@ pub fn spawn_rope_between(
         near,
         far,
         Quat::from_rotation_arc(Vec3::Y, dir),
-        false,
+        player,
         false,
     )
 }
@@ -390,6 +413,7 @@ fn assemble_rope(
             Friction::new(spec.friction),
             Restitution::new(spec.restitution),
             Mass(link_mass),
+            ActiveCollisionHooks::FILTER_PAIRS,
             LinearVelocity::ZERO,
             AngularVelocity::ZERO,
             LinearDamping(spec.linear_damping),
@@ -431,7 +455,8 @@ fn assemble_rope(
                 DistanceJoint::new(links[index], links[index + 1])
                     .with_local_anchor1(Vec3::ZERO)
                     .with_local_anchor2(Vec3::ZERO)
-                    .with_limits(0.0, spacing),
+                    .with_limits(0.0, spacing)
+                    .with_compliance(ROPE_COMPLIANCE),
             ));
         } else {
             commands.spawn((
@@ -444,7 +469,8 @@ fn assemble_rope(
                 SphericalJoint::new(links[index], links[index + 1])
                     .with_local_anchor1(tip)
                     .with_local_anchor2(-tip)
-                    .with_twist_axis(Vec3::Y),
+                    .with_twist_axis(Vec3::Y)
+                    .with_point_compliance(ROPE_COMPLIANCE),
             ));
         }
     }
@@ -468,14 +494,59 @@ pub fn pin_rope_end(
         },
         SphericalJoint::new(end, host)
             .with_local_anchor1(Vec3::ZERO)
-            .with_local_anchor2(local_on_host),
+            .with_local_anchor2(local_on_host)
+            .with_point_compliance(ROPE_COMPLIANCE),
     ));
     // The pin holds the end. A contact with the host would fight that joint.
     commands.entity(end).insert(Sensor);
 }
 
+/// Keeps a rope from bumping the parts its ends are tied to. The links run
+/// through those parts, and that contact is what throws them around.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct RopeContactHooks<'w, 's> {
+    links: Query<'w, 's, &'static ChainLink>,
+    ropes: Query<'w, 's, &'static Part>,
+    pins: Query<'w, 's, &'static RopeJoint>,
+}
+
+impl RopeContactHooks<'_, '_> {
+    fn rope_root(&self, entity: Entity) -> Option<Entity> {
+        if let Ok(link) = self.links.get(entity) {
+            return Some(link.root);
+        }
+        self.ropes
+            .get(entity)
+            .ok()
+            .filter(|part| part.kind == PartKind::Rope)
+            .map(|_| entity)
+    }
+
+    fn tied_to(&self, rope: Entity, other: Entity) -> bool {
+        self.pins
+            .iter()
+            .any(|joint| joint.root == rope && joint.host == Some(other))
+    }
+}
+
+impl CollisionHooks for RopeContactHooks<'_, '_> {
+    fn filter_pairs(&self, collider1: Entity, collider2: Entity, _commands: &mut Commands) -> bool {
+        if let Some(root) = self.rope_root(collider1) {
+            if self.tied_to(root, collider2) {
+                return false;
+            }
+        }
+        if let Some(root) = self.rope_root(collider2) {
+            if self.tied_to(root, collider1) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 fn collider_for(spec: &PartSpec) -> Collider {
-    if spec.kind == PartKind::Ball {
+    if spec.kind.round() {
         Collider::sphere(spec.size.x * 0.5)
     } else {
         Collider::cuboid(spec.size.x, spec.size.y, spec.size.z)

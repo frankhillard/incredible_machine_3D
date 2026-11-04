@@ -15,6 +15,7 @@ pub struct Palette {
     pub frame: Handle<StandardMaterial>,
     pub felt: Handle<StandardMaterial>,
     pub goal: Handle<StandardMaterial>,
+    pub weight: Handle<StandardMaterial>,
 }
 
 impl Palette {
@@ -26,6 +27,7 @@ impl Palette {
             crate::parts::PartKind::Ball => self.ball.clone(),
             crate::parts::PartKind::Spring => self.spring.clone(),
             crate::parts::PartKind::Rope => self.rope.clone(),
+            crate::parts::PartKind::Weight => self.weight.clone(),
         }
     }
 }
@@ -60,6 +62,12 @@ pub fn setup_palette(mut commands: Commands, mut materials: ResMut<Assets<Standa
         rope: materials.add(StandardMaterial {
             base_color: Color::srgb(0.55, 0.42, 0.26),
             perceptual_roughness: 0.84,
+            ..default()
+        }),
+        weight: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.24, 0.24, 0.26),
+            perceptual_roughness: 0.55,
+            metallic: 0.15,
             ..default()
         }),
         selected: materials.add(StandardMaterial {

@@ -91,7 +91,7 @@ pub fn spin(pose: &mut Transform, axis: Axis, angle: f32) {
 /// How far a loose part's center can be from a host surface and still be resting on it.
 pub fn support_reach(kind: PartKind) -> f32 {
     let size = kind.spec().size;
-    if kind == PartKind::Ball {
+    if kind.round() {
         size.x * 0.5
     } else {
         size.min_element() * 0.5
@@ -136,7 +136,7 @@ fn riding_poses(
         Ok((_, _, part, _, _)) => part.kind,
         Err(_) => return Vec::new(),
     };
-    if host_kind == PartKind::Ball {
+    if host_kind.round() {
         return Vec::new();
     }
     let half = host_kind.spec().size * 0.5;
@@ -261,7 +261,7 @@ pub fn point_on_supports(
         } else {
             continue;
         };
-        let extent = if kind == PartKind::Ball {
+        let extent = if kind.round() {
             spec.size.x * 0.5
         } else {
             extent_along(spec.size, rotation, face_normal)
@@ -352,13 +352,13 @@ pub fn unbury_balls(
     }
     let mut supports = static_cuboids(&supports);
     for (_, transform, part, _, _) in &balls {
-        if part.sticky && part.kind != PartKind::Ball && part.kind != PartKind::Rope {
+        if part.sticky && !part.kind.round() && part.kind != PartKind::Rope {
             supports.push((*transform, part.kind.spec().size * 0.5));
         }
     }
     let mut fixes = Vec::new();
     for (entity, transform, part, _, _) in &balls {
-        if part.kind != PartKind::Ball || part.sticky {
+        if !part.kind.round() || part.sticky {
             continue;
         }
         let radius = part.kind.spec().size.x * 0.5;
@@ -649,7 +649,7 @@ pub fn gizmo_scroll(
     }
     let mut surfaces = static_cuboids(&supports);
     for (_, transform, part, _, _) in &parts {
-        if part.sticky && part.kind != PartKind::Ball && part.kind != PartKind::Rope {
+        if part.sticky && !part.kind.round() && part.kind != PartKind::Rope {
             surfaces.push((*transform, part.kind.spec().size * 0.5));
         }
     }
@@ -665,8 +665,8 @@ pub fn gizmo_scroll(
             spin(&mut pose, axis, lines * SPIN_PER_NOTCH);
         } else {
             slide(&mut pose, axis, lines * SLIDE_PER_NOTCH);
-            if part.kind == PartKind::Ball && !part.sticky {
-                let radius = PartKind::Ball.spec().size.x * 0.5;
+            if part.kind.round() && !part.sticky {
+                let radius = part.kind.spec().size.x * 0.5;
                 pose.translation = rest_on_slope(pose.translation, radius, &surfaces, 0.35);
             }
         }
@@ -705,7 +705,7 @@ pub fn sync_ghost(
     };
     let mut surfaces = static_cuboids(&supports);
     for (transform, part) in &nailed {
-        if part.sticky && part.kind != PartKind::Ball && part.kind != PartKind::Rope {
+        if part.sticky && !part.kind.round() && part.kind != PartKind::Rope {
             surfaces.push((*transform, part.kind.spec().size * 0.5));
         }
     }
@@ -814,7 +814,7 @@ pub fn pointer(
     }
     let mut surfaces = static_cuboids(&supports);
     for (transform, part) in &players {
-        if part.sticky && part.kind != PartKind::Ball && part.kind != PartKind::Rope {
+        if part.sticky && !part.kind.round() && part.kind != PartKind::Rope {
             surfaces.push((*transform, part.kind.spec().size * 0.5));
         }
     }
@@ -833,6 +833,7 @@ pub fn pointer(
             rotation_y: 0.0,
             rotation_z: shelf.tilt,
             sticky: kind.spec().sticky_default,
+            ends: [[0.0; 3]; 2],
         },
     );
     shelf.remaining[kind.slot()] -= 1;

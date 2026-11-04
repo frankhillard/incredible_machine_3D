@@ -76,6 +76,8 @@ pub struct Placement {
     pub rotation_y: f32,
     pub rotation_z: f32,
     pub sticky: bool,
+    /// The two end-link positions of a rope. Other parts leave this at the origin.
+    pub ends: [[f32; 3]; 2],
 }
 
 #[derive(Component)]
@@ -110,6 +112,8 @@ pub fn builtin_levels() -> Vec<Level> {
         ron::from_str(include_str!("../assets/levels/level1.ron")).expect("level1.ron"),
         ron::from_str(include_str!("../assets/levels/level2.ron")).expect("level2.ron"),
         ron::from_str(include_str!("../assets/levels/level3.ron")).expect("level3.ron"),
+        ron::from_str(include_str!("../assets/levels/level4.ron")).expect("level4.ron"),
+        ron::from_str(include_str!("../assets/levels/level5.ron")).expect("level5.ron"),
     ]
 }
 
@@ -145,6 +149,7 @@ pub fn level1_placements(level: &Level) -> [Placement; 2] {
             rotation_y: 0.0,
             rotation_z: -28.648_f32.to_radians(),
             sticky: true,
+            ends: [[0.0; 3]; 2],
         },
         Placement {
             kind: PartKind::Spring,
@@ -153,6 +158,7 @@ pub fn level1_placements(level: &Level) -> [Placement; 2] {
             rotation_y: 0.0,
             rotation_z: -17.189_f32.to_radians(),
             sticky: true,
+            ends: [[0.0; 3]; 2],
         },
     ]
 }
@@ -177,6 +183,7 @@ pub fn level2_placements(level: &Level) -> [Placement; 4] {
             rotation_y: 2.743_f32.to_radians(),
             rotation_z: -28.527_f32.to_radians(),
             sticky: true,
+            ends: [[0.0; 3]; 2],
         },
         Placement {
             kind: PartKind::Board,
@@ -185,6 +192,7 @@ pub fn level2_placements(level: &Level) -> [Placement; 4] {
             rotation_y: 0.0,
             rotation_z: -11.459_f32.to_radians(),
             sticky: true,
+            ends: [[0.0; 3]; 2],
         },
         Placement {
             kind: PartKind::Board,
@@ -193,6 +201,7 @@ pub fn level2_placements(level: &Level) -> [Placement; 4] {
             rotation_y: 0.0,
             rotation_z: 0.0,
             sticky: true,
+            ends: [[0.0; 3]; 2],
         },
         Placement {
             kind: PartKind::Spring,
@@ -201,10 +210,10 @@ pub fn level2_placements(level: &Level) -> [Placement; 4] {
             rotation_y: 2.817_f32.to_radians(),
             rotation_z: 16.944_f32.to_radians(),
             sticky: true,
+            ends: [[0.0; 3]; 2],
         },
     ]
 }
-
 
 #[cfg(test)]
 pub fn level3_placements(level: &Level) -> [Placement; 2] {
@@ -222,6 +231,7 @@ pub fn level3_placements(level: &Level) -> [Placement; 2] {
             rotation_y: 0.0,
             rotation_z: -0.2,
             sticky: true,
+            ends: [[0.0; 3]; 2],
         },
         Placement {
             kind: PartKind::Spring,
@@ -230,9 +240,42 @@ pub fn level3_placements(level: &Level) -> [Placement; 2] {
             rotation_y: 0.0,
             rotation_z: 0.0,
             sticky: true,
+            ends: [[0.0; 3]; 2],
         },
     ]
 }
+
+/// The rope that ties the high anchor to the loose weight in "Level 4".
+#[cfg(test)]
+pub fn level4_placements(level: &Level) -> [Placement; 2] {
+    let ball = level
+        .fixtures
+        .iter()
+        .find(|fixture| fixture.kind == PartKind::Ball)
+        .expect("level 4 starts with a loose ball");
+    let z = ball.position[2];
+    [
+        Placement {
+            kind: PartKind::Weight,
+            position: [-3.2014, 4.900, z],
+            rotation_x: 0.0,
+            rotation_y: 0.0,
+            rotation_z: 0.0,
+            sticky: false,
+            ends: [[0.0; 3]; 2],
+        },
+        Placement {
+            kind: PartKind::Rope,
+            position: [0.0, 0.0, z],
+            rotation_x: 0.0,
+            rotation_y: 0.0,
+            rotation_z: 0.0,
+            sticky: false,
+            ends: [[-2.5151, 5.3935, z], [-3.2014, 4.900, z]],
+        },
+    ]
+}
+
 /// Board and ball that solve "A Rolling Start", derived from that level's ramp and landing.
 #[cfg(test)]
 pub fn rolling_start_placements(level: &Level) -> [Placement; 2] {
@@ -294,6 +337,7 @@ pub fn rolling_start_placements(level: &Level) -> [Placement; 2] {
             rotation_y: 0.0,
             rotation_z: board_angle,
             sticky: true,
+            ends: [[0.0; 3]; 2],
         },
         Placement {
             kind: PartKind::Ball,
@@ -302,6 +346,7 @@ pub fn rolling_start_placements(level: &Level) -> [Placement; 2] {
             rotation_y: 0.0,
             rotation_z: 0.0,
             sticky: false,
+            ends: [[0.0; 3]; 2],
         },
     ]
 }
@@ -327,7 +372,8 @@ pub fn spawn_level_contents(
         if fixture.kind == PartKind::Rope && fixture.ends != [[0.0; 3]; 2] {
             let near = Vec3::from_array(fixture.ends[0]);
             let far = Vec3::from_array(fixture.ends[1]);
-            let (root, far_link) = spawn_rope_between(commands, meshes, palette, &spec, near, far);
+            let (root, far_link) =
+                spawn_rope_between(commands, meshes, palette, &spec, near, far, false);
             ropes.push(AuthoredRope {
                 root,
                 far_link,
@@ -362,7 +408,7 @@ pub fn spawn_level_contents(
                 fixture.rotation_z,
             ),
             half: Vec3::from_array(fixture.size) * 0.5,
-            ball: fixture.kind == PartKind::Ball,
+            ball: fixture.kind.round(),
         });
     }
     for rope in ropes {
@@ -446,6 +492,12 @@ pub fn spawn_player_part(
     placement: Placement,
 ) -> Entity {
     let spec = placement.kind.spec();
+    if placement.kind == PartKind::Rope && placement.ends != [[0.0; 3]; 2] {
+        let near = Vec3::from_array(placement.ends[0]);
+        let far = Vec3::from_array(placement.ends[1]);
+        let (root, _) = spawn_rope_between(commands, meshes, palette, &spec, near, far, true);
+        return root;
+    }
     spawn_part(
         commands,
         meshes,
@@ -471,7 +523,7 @@ mod tests {
     #[test]
     fn both_level_files_parse() {
         let levels = builtin_levels();
-        assert_eq!(levels.len(), 6);
+        assert_eq!(levels.len(), 8);
         assert_eq!(levels[0].name, "A Rolling Start");
         assert_eq!(levels[1].name, "Across the Gap");
         assert_eq!(levels[2].name, "Bounce the Gap");
@@ -560,6 +612,47 @@ mod tests {
         assert_eq!(rope.rotation_x, 0.0);
         assert_eq!(rope.rotation_y, 0.0);
         assert_eq!(rope.rotation_z, 0.0);
+
+        // Level 4
+        assert_eq!(levels[6].name, "Level 4");
+        assert_eq!(levels[6].goal.kind, PartKind::Ball);
+        let ball = levels[6]
+            .fixtures
+            .iter()
+            .find(|item| item.kind == PartKind::Ball)
+            .expect("level 4 starts with a ball");
+        assert!(!ball.sticky);
+        assert!(levels[6]
+            .inventory
+            .iter()
+            .any(|item| item.kind == PartKind::Weight));
+        assert!(levels[6]
+            .inventory
+            .iter()
+            .any(|item| item.kind == PartKind::Rope));
+        assert!(levels[6]
+            .fixtures
+            .iter()
+            .filter(|item| item.kind != PartKind::Ball)
+            .all(|item| item.sticky));
+
+        // Level 5
+        assert_eq!(levels[7].name, "Level 5");
+        assert_eq!(levels[7].goal.kind, PartKind::Ball);
+        let weight = levels[7]
+            .fixtures
+            .iter()
+            .find(|item| item.kind == PartKind::Weight)
+            .expect("level 5 starts with a weight");
+        assert!(!weight.sticky);
+        assert!(weight.kind.round());
+        let rope = levels[7]
+            .fixtures
+            .iter()
+            .find(|item| item.kind == PartKind::Rope)
+            .expect("level 5 starts with a rope");
+        assert_eq!(rope.ends[0], [-2.5151, 5.3935, 0.25]);
+        assert_eq!(rope.ends[1], [-3.2014, 4.900, 0.25]);
 
         // Bounce the Gap
         assert!(levels[2]
@@ -783,5 +876,24 @@ mod tests {
             "the spring at x={} is not in the gap {high_right}..{landing_left}",
             across.position[0]
         );
+    }
+
+    #[test]
+    fn level_4_solution_ties_the_rope_between_the_anchor_and_the_weight() {
+        let level = &builtin_levels()[6];
+        let [weight, rope] = level4_placements(level);
+        assert_eq!(weight.kind, PartKind::Weight);
+        assert!(!weight.sticky);
+        assert_eq!(rope.kind, PartKind::Rope);
+        assert!(!rope.sticky);
+        let anchor = level
+            .fixtures
+            .iter()
+            .find(|fixture| {
+                fixture.kind == PartKind::Block && fixture.size[0] < 0.2 && fixture.size[1] < 0.2
+            })
+            .expect("level 4 has a small anchor block");
+        assert_eq!(rope.ends[0], anchor.position);
+        assert_eq!(rope.ends[1], weight.position);
     }
 }
