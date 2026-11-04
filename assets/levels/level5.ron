@@ -54,6 +54,14 @@ friction: 0.45,
 restitution: 0.0,
 ),
 (
+kind: block,
+position: (2.18, 2.5373, 0.25),
+size: (1.6, 0.1, 0.5),
+friction: 0.45,
+restitution: 0.0,
+rotation_z: 1.57
+),
+(
 kind: weight,
 position: (-3.2014, 4.900, 0.25),
 size: (0.32, 0.32, 0.32),
@@ -73,11 +81,6 @@ restitution: 0.02,
 ),
 ],
 inventory: [
-(kind: board, count: 2),
-(kind: block, count: 4),
-(kind: spring, count: 4),
-(kind: plank, count: 4),
-(kind: rope, count: 6),
-(kind: weight, count: 4),
+(kind: spring, count: 3),
 ],
 )
