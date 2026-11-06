@@ -67,5 +67,9 @@ count: 1,
 kind: spring,
 count: 2,
 ),
+(
+kind: seesaw,
+count: 1,
+),
 ],
 )

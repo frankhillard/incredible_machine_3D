@@ -76,7 +76,7 @@ restitution: 0.02,
 ],
 inventory: [
 (kind: board, count: 1),
-(kind: spring, count: 2),
+(kind: spring, count: 1),
 
 ],
 )
