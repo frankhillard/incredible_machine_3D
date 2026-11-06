@@ -14,10 +14,11 @@ pub enum PartKind {
     Spring,
     Rope,
     Weight,
+    Seesaw,
 }
 
 impl PartKind {
-    pub const ALL: [PartKind; 7] = [
+    pub const ALL: [PartKind; 8] = [
         PartKind::Board,
         PartKind::Block,
         PartKind::Plank,
@@ -25,6 +26,7 @@ impl PartKind {
         PartKind::Spring,
         PartKind::Rope,
         PartKind::Weight,
+        PartKind::Seesaw,
     ];
 
     pub fn slot(self) -> usize {
@@ -36,6 +38,7 @@ impl PartKind {
             PartKind::Spring => 4,
             PartKind::Rope => 5,
             PartKind::Weight => 6,
+            PartKind::Seesaw => 7,
         }
     }
 
@@ -53,6 +56,7 @@ impl PartKind {
             PartKind::Spring => "Spring",
             PartKind::Rope => "Rope",
             PartKind::Weight => "Weight",
+            PartKind::Seesaw => "Seesaw",
         }
     }
 
@@ -127,6 +131,16 @@ impl PartKind {
                 sticky_default: false,
                 linear_damping: 0.2,
                 angular_damping: 0.45,
+            },
+            PartKind::Seesaw => PartSpec {
+                kind: self,
+                size: Vec3::new(1.4, 0.08, 0.42),
+                friction: 0.4,
+                restitution: 0.04,
+                mass: 1.1,
+                sticky_default: false,
+                linear_damping: 0.08,
+                angular_damping: 0.25,
             },
         }
     }
@@ -241,21 +255,24 @@ pub fn spawn_part(
         return entity.id();
     }
 
+    // A seesaw is a plank nailed through its middle. The center stays where
+    // it was placed, and the only free motion is tipping around world Z.
+    let seesaw = spawn.spec.kind == PartKind::Seesaw;
+    let sticky = spawn.sticky && !seesaw;
+    let body = if sticky {
+        RigidBody::Static
+    } else {
+        RigidBody::Dynamic
+    };
     entity.insert(Part {
         kind: spawn.spec.kind,
-        sticky: spawn.sticky,
+        sticky,
     });
     if spawn.player {
         entity.insert(PlayerPart);
     } else {
         entity.insert(Fixture);
     }
-
-    let body = if spawn.sticky {
-        RigidBody::Static
-    } else {
-        RigidBody::Dynamic
-    };
     entity.insert((
         body,
         collider_for(spawn.spec),
@@ -269,6 +286,13 @@ pub fn spawn_part(
         LinearDamping(spawn.spec.linear_damping),
         AngularDamping(spawn.spec.angular_damping),
     ));
+    if seesaw {
+        entity.insert(
+            LockedAxes::TRANSLATION_LOCKED
+                .lock_rotation_x()
+                .lock_rotation_y(),
+        );
+    }
     entity.id()
 }
 

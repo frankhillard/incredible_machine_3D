@@ -75,10 +75,8 @@ restitution: 0.02,
 ),
 ],
 inventory: [
-(kind: board, count: 2),
-(kind: block, count: 2),
+(kind: board, count: 1),
 (kind: spring, count: 2),
-(kind: plank, count: 6),
-(kind: rope, count: 6),
+
 ],
 )

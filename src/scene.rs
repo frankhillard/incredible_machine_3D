@@ -16,6 +16,7 @@ pub struct Palette {
     pub felt: Handle<StandardMaterial>,
     pub goal: Handle<StandardMaterial>,
     pub weight: Handle<StandardMaterial>,
+    pub seesaw: Handle<StandardMaterial>,
 }
 
 impl Palette {
@@ -28,6 +29,7 @@ impl Palette {
             crate::parts::PartKind::Spring => self.spring.clone(),
             crate::parts::PartKind::Rope => self.rope.clone(),
             crate::parts::PartKind::Weight => self.weight.clone(),
+            crate::parts::PartKind::Seesaw => self.seesaw.clone(),
         }
     }
 }
@@ -70,6 +72,7 @@ pub fn setup_palette(mut commands: Commands, mut materials: ResMut<Assets<Standa
             metallic: 0.15,
             ..default()
         }),
+        seesaw: wood(&mut materials, Color::srgb(0.72, 0.28, 0.18), 0.62),
         selected: materials.add(StandardMaterial {
             base_color: Color::srgb(0.95, 0.78, 0.35),
             perceptual_roughness: 0.4,

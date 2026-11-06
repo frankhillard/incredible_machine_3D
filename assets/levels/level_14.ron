@@ -1,5 +1,5 @@
 (
-name: "Level 14",
+name: "Level 14 todo",
 hint: "Bridge the gap with boards and planks and send the ball from the high platform into the basket.",
 goal: (
 kind: ball,
@@ -93,5 +93,6 @@ count: 6,
 kind: weight,
 count: 1,
 ),
+(kind: seesaw, count: 1)
 ],
 )

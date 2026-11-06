@@ -78,14 +78,6 @@ kind: block,
 count: 2,
 ),
 (
-kind: plank,
-count: 6,
-),
-(
-kind: rope,
-count: 6,
-),
-(
 kind: spring,
 count: 3,
 ),

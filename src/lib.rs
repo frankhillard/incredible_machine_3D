@@ -795,6 +795,70 @@ mod play_test {
         );
     }
 
+    #[test]
+    fn a_seesaw_tips_around_z_and_stays_on_its_pivot() {
+        let mut app = test_app();
+        let pivot = Vec3::new(0.0, 8.0, 0.25);
+        app.insert_resource(Scripted(vec![
+            Placement {
+                kind: PartKind::Seesaw,
+                position: pivot.to_array(),
+                rotation_x: 0.0,
+                rotation_y: 0.0,
+                rotation_z: 0.0,
+                sticky: true,
+                ends: [[0.0; 3]; 2],
+            },
+            Placement {
+                kind: PartKind::Weight,
+                position: [0.5, 8.6, 0.25],
+                rotation_x: 0.0,
+                rotation_y: 0.0,
+                rotation_z: 0.0,
+                sticky: false,
+                ends: [[0.0; 3]; 2],
+            },
+        ]));
+        app.finish();
+        app.cleanup();
+        app.update();
+
+        {
+            let mut parts = app.world_mut().query::<&Part>();
+            let seesaw = parts
+                .iter(app.world())
+                .find(|part| part.kind == PartKind::Seesaw)
+                .expect("seesaw");
+            assert!(!seesaw.sticky, "a seesaw stays free to tip");
+        }
+
+        app.world_mut().resource_mut::<Time<Physics>>().unpause();
+        let mut dipped = false;
+        for _ in 0..90 {
+            app.update();
+            let mut query = app.world_mut().query::<(&Part, &Transform)>();
+            let world = app.world();
+            let (_, transform) = query
+                .iter(world)
+                .find(|(part, _)| part.kind == PartKind::Seesaw)
+                .expect("seesaw");
+            let center = transform.translation;
+            assert!(
+                center.distance(pivot) < 0.05,
+                "the pivot drifted to {center:?}"
+            );
+            let end = transform.rotation * Vec3::X;
+            assert!(
+                end.z.abs() < 0.05,
+                "the seesaw twisted out of the side view, end {end:?}"
+            );
+            if end.y < -0.15 {
+                dipped = true;
+            }
+        }
+        assert!(dipped, "the weight never tipped the seesaw");
+    }
+
     fn rope_end_ys(app: &mut App) -> Vec<f32> {
         let mut query = app.world_mut().query::<(&Part, &Transform)>();
         let world = app.world();

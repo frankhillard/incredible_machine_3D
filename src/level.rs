@@ -136,6 +136,13 @@ pub fn builtin_levels() -> Vec<Level> {
         ron::from_str(include_str!("../assets/levels/level_12.ron")).expect("level_12.ron"),
         ron::from_str(include_str!("../assets/levels/level_13.ron")).expect("level_13.ron"),
         ron::from_str(include_str!("../assets/levels/level_14.ron")).expect("level_14.ron"),
+        ron::from_str(include_str!("../assets/levels/level_15.ron")).expect("level_15.ron"),
+        ron::from_str(include_str!("../assets/levels/level_16.ron")).expect("level_16.ron"),
+        ron::from_str(include_str!("../assets/levels/level_17.ron")).expect("level_17.ron"),
+        ron::from_str(include_str!("../assets/levels/level_18.ron")).expect("level_18.ron"),
+        ron::from_str(include_str!("../assets/levels/level_19.ron")).expect("level_19.ron"),
+        ron::from_str(include_str!("../assets/levels/level_20.ron")).expect("level_20.ron"),
+        ron::from_str(include_str!("../assets/levels/level_21.ron")).expect("level_21.ron"),
     ]
 }
 
