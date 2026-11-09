@@ -184,6 +184,20 @@ pub struct ChainLink {
     pub end: bool,
 }
 
+/// The fixed body a seesaw hinges on. Also marks the hinge joint, so both go
+/// away with the board.
+#[derive(Component, Clone, Copy)]
+pub struct SeesawPivot {
+    pub board: Entity,
+}
+
+/// The static pivot of a seesaw. The board rotates about that body's local Z,
+/// which is the side of length `size.z` (0.42 for a shelf seesaw).
+#[derive(Component, Clone, Copy)]
+pub struct SeesawHinge {
+    pub anchor: Entity,
+}
+
 /// A joint that belongs to a rope, so deleting the rope removes it too.
 #[derive(Component, Clone, Copy)]
 pub struct RopeJoint {
@@ -255,8 +269,8 @@ pub fn spawn_part(
         return entity.id();
     }
 
-    // A seesaw is a plank nailed through its middle. The center stays where
-    // it was placed, and the only free motion is tipping around world Z.
+    // A seesaw is a plank nailed through its middle. The nail is the body's
+    // own Z axis: the edge of length size.z, whatever way the part was turned.
     let seesaw = spawn.spec.kind == PartKind::Seesaw;
     let sticky = spawn.sticky && !seesaw;
     let body = if sticky {
@@ -286,14 +300,33 @@ pub fn spawn_part(
         LinearDamping(spawn.spec.linear_damping),
         AngularDamping(spawn.spec.angular_damping),
     ));
+    let board = entity.id();
     if seesaw {
-        entity.insert(
-            LockedAxes::TRANSLATION_LOCKED
-                .lock_rotation_x()
-                .lock_rotation_y(),
-        );
+        let anchor = commands
+            .spawn((
+                LevelObject,
+                SeesawPivot { board },
+                RigidBody::Static,
+                Transform {
+                    translation: spawn.position,
+                    rotation,
+                    scale: Vec3::ONE,
+                },
+                Position(spawn.position),
+                Rotation(rotation),
+            ))
+            .id();
+        commands.spawn((
+            LevelObject,
+            SeesawPivot { board },
+            RevoluteJoint::new(anchor, board)
+                .with_hinge_axis(Vec3::Z)
+                .with_local_anchor1(Vec3::ZERO)
+                .with_local_anchor2(Vec3::ZERO),
+        ));
+        commands.entity(board).insert(SeesawHinge { anchor });
     }
-    entity.id()
+    board
 }
 
 fn mesh_for(meshes: &mut Assets<Mesh>, spec: &PartSpec) -> Handle<Mesh> {

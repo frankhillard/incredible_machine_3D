@@ -859,6 +859,222 @@ mod play_test {
         assert!(dipped, "the weight never tipped the seesaw");
     }
 
+    #[test]
+    fn a_turned_seesaw_tips_around_its_short_side() {
+        let mut app = test_app();
+        let pivot = Vec3::new(0.0, 8.0, 0.25);
+        let yaw = std::f32::consts::FRAC_PI_2;
+        let placed = Quat::from_euler(EulerRot::XYZ, 0.0, yaw, 0.0);
+        let axle = placed * Vec3::Z;
+        let along = placed * Vec3::X;
+        assert!(
+            axle.x.abs() > 0.99 && axle.z.abs() < 0.01,
+            "this turn should lay the short side along world X, got {axle:?}"
+        );
+        let weight_at = pivot + along * 0.5 + Vec3::Y * 0.6;
+        app.insert_resource(Scripted(vec![
+            Placement {
+                kind: PartKind::Seesaw,
+                position: pivot.to_array(),
+                rotation_x: 0.0,
+                rotation_y: yaw,
+                rotation_z: 0.0,
+                sticky: false,
+                ends: [[0.0; 3]; 2],
+            },
+            Placement {
+                kind: PartKind::Weight,
+                position: weight_at.to_array(),
+                rotation_x: 0.0,
+                rotation_y: 0.0,
+                rotation_z: 0.0,
+                sticky: false,
+                ends: [[0.0; 3]; 2],
+            },
+        ]));
+        app.finish();
+        app.cleanup();
+        app.update();
+        app.world_mut().resource_mut::<Time<Physics>>().unpause();
+
+        let mut dipped = false;
+        for _ in 0..120 {
+            app.update();
+            let mut query = app.world_mut().query::<(&Part, &Transform)>();
+            let world = app.world();
+            let (_, transform) = query
+                .iter(world)
+                .find(|(part, _)| part.kind == PartKind::Seesaw)
+                .expect("seesaw");
+            assert!(
+                transform.translation.distance(pivot) < 0.05,
+                "the pivot drifted to {:?}",
+                transform.translation
+            );
+            let short = transform.rotation * Vec3::Z;
+            assert!(
+                short.dot(axle).abs() > 0.98,
+                "the hinge left the short side, short {short:?}, axle {axle:?}"
+            );
+            if (transform.rotation * Vec3::X).y < -0.15 {
+                dipped = true;
+            }
+        }
+        assert!(
+            dipped,
+            "the weight never tipped the seesaw about its short side"
+        );
+    }
+
+    #[test]
+    fn a_posed_seesaw_holds_its_orientation_until_something_hits_it() {
+        let placed = Quat::from_euler(EulerRot::XYZ, 0.7, -0.4, 0.9);
+        let mut app = test_app();
+        let pivot = Vec3::new(0.2, 12.0, 0.25);
+        app.insert_resource(Scripted(vec![Placement {
+            kind: PartKind::Seesaw,
+            position: pivot.to_array(),
+            rotation_x: 0.7,
+            rotation_y: -0.4,
+            rotation_z: 0.9,
+            sticky: false,
+            ends: [[0.0; 3]; 2],
+        }]));
+        app.finish();
+        app.cleanup();
+        app.update();
+        app.world_mut().resource_mut::<Time<Physics>>().unpause();
+        for _ in 0..180 {
+            app.update();
+        }
+        let mut query = app.world_mut().query::<(&Part, &Transform)>();
+        let (_, transform) = query
+            .iter(app.world())
+            .find(|(part, _)| part.kind == PartKind::Seesaw)
+            .expect("seesaw");
+        let drift = placed.inverse() * transform.rotation;
+        let (x, y, z) = drift.to_euler(EulerRot::XYZ);
+        assert!(
+            transform.translation.distance(pivot) < 0.02,
+            "pivot moved to {:?}",
+            transform.translation
+        );
+        assert!(
+            x.abs() < 0.02 && y.abs() < 0.02 && z.abs() < 0.02,
+            "seesaw rotated on its own, drift euler ({x}, {y}, {z}), now {:?}",
+            transform.rotation
+        );
+    }
+
+    #[test]
+    fn turning_a_seesaw_in_edit_mode_does_not_make_it_spin_when_play_starts() {
+        let mut app = test_app();
+        let pivot = Vec3::new(0.2, 12.0, 0.25);
+        app.insert_resource(Scripted(vec![Placement {
+            kind: PartKind::Seesaw,
+            position: pivot.to_array(),
+            rotation_x: 0.0,
+            rotation_y: 0.0,
+            rotation_z: 0.0,
+            sticky: false,
+            ends: [[0.0; 3]; 2],
+        }]));
+        app.finish();
+        app.cleanup();
+        app.update();
+
+        let posed = Quat::from_euler(EulerRot::XYZ, 0.8, 0.0, 0.0);
+        let board = {
+            let mut query = app.world_mut().query::<(Entity, &Part)>();
+            query
+                .iter(app.world())
+                .find_map(|(entity, part)| (part.kind == PartKind::Seesaw).then_some(entity))
+                .expect("seesaw")
+        };
+        let anchor = app
+            .world()
+            .get::<crate::parts::SeesawHinge>(board)
+            .expect("hinge")
+            .anchor;
+        {
+            let mut transform = app
+                .world_mut()
+                .get_mut::<Transform>(board)
+                .expect("board transform");
+            transform.rotation = posed;
+        }
+        app.world_mut()
+            .get_mut::<Rotation>(board)
+            .expect("board rotation")
+            .0 = posed;
+        app.update();
+
+        let anchor_rotation = app.world().get::<Rotation>(anchor).expect("anchor").0;
+        let drift = posed.inverse() * anchor_rotation;
+        let (x, y, z) = drift.to_euler(EulerRot::XYZ);
+        assert!(
+            x.abs() < 0.02 && y.abs() < 0.02 && z.abs() < 0.02,
+            "the pivot did not follow the edit, drift ({x}, {y}, {z})"
+        );
+
+        app.world_mut().resource_mut::<Time<Physics>>().unpause();
+        for _ in 0..180 {
+            app.update();
+        }
+        let rotation = app.world().get::<Transform>(board).expect("board").rotation;
+        let drift = posed.inverse() * rotation;
+        let (x, y, z) = drift.to_euler(EulerRot::XYZ);
+        assert!(
+            x.abs() < 0.02 && y.abs() < 0.02 && z.abs() < 0.02,
+            "play rotated the edited seesaw, drift ({x}, {y}, {z})"
+        );
+    }
+
+    #[test]
+    fn a_tilted_seesaw_dug_into_a_block_keeps_its_angle() {
+        let mut app = test_app();
+        let pivot = Vec3::new(0.0, 8.0, 0.25);
+        let tilt = 0.6_f32;
+        app.insert_resource(Scripted(vec![Placement {
+            kind: PartKind::Seesaw,
+            position: pivot.to_array(),
+            rotation_x: 0.0,
+            rotation_y: 0.0,
+            rotation_z: tilt,
+            sticky: false,
+            ends: [[0.0; 3]; 2],
+        }]));
+        app.finish();
+        app.cleanup();
+        app.update();
+        let low = pivot + Quat::from_rotation_z(tilt) * Vec3::new(-0.7, 0.0, 0.0);
+        app.world_mut().spawn((
+            RigidBody::Static,
+            Collider::cuboid(0.8, 0.4, 0.8),
+            Transform::from_translation(low),
+            Position(low),
+            Rotation(Quat::IDENTITY),
+        ));
+        app.world_mut()
+            .resource_mut::<NextState<GameState>>()
+            .set(GameState::Playing);
+        for _ in 0..120 {
+            app.update();
+        }
+        let mut query = app.world_mut().query::<(&Part, &Transform)>();
+        let (_, transform) = query
+            .iter(app.world())
+            .find(|(part, _)| part.kind == PartKind::Seesaw)
+            .expect("seesaw");
+        let (x, y, z) =
+            (Quat::from_rotation_z(tilt).inverse() * transform.rotation).to_euler(EulerRot::XYZ);
+        assert!(
+            x.abs() < 0.05 && y.abs() < 0.05 && z.abs() < 0.05,
+            "the buried end spun the seesaw, drift ({x}, {y}, {z}), pose {:?}",
+            transform.rotation.to_euler(EulerRot::XYZ)
+        );
+    }
+
     fn rope_end_ys(app: &mut App) -> Vec<f32> {
         let mut query = app.world_mut().query::<(&Part, &Transform)>();
         let world = app.world();

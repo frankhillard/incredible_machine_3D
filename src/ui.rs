@@ -201,7 +201,7 @@ pub fn draw_ui(
                         if kind == crate::parts::PartKind::Rope {
                             ui.label("Slide an end's arrows onto a part to pin that end.");
                         } else if kind == crate::parts::PartKind::Seesaw {
-                            ui.label("Pinned at its center. It only tips around Z.");
+                            ui.label("Pinned at its center. It tips around the axis along its short side.");
                         } else if ui.checkbox(&mut sticky, "Sticky (nailed)").changed() {
                             if let Ok((_, _, mut part, _, _)) = parts.get_mut(entity) {
                                 part.sticky = sticky;

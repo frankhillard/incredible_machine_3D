@@ -132,6 +132,129 @@ pub fn enter_editing(
     }
 }
 
+fn physics_paused(time: Res<Time<Physics>>) -> bool {
+    time.is_paused()
+}
+
+/// Keeps each seesaw's pivot lined up with the board while physics is paused,
+/// so the hinge follows the way the part was turned in the editor.
+pub fn sync_seesaw_pivots(
+    boards: Query<(&Transform, &crate::parts::SeesawHinge), Without<crate::parts::SeesawPivot>>,
+    mut anchors: Query<
+        (&mut Transform, Option<&mut Position>, Option<&mut Rotation>),
+        (
+            With<crate::parts::SeesawPivot>,
+            Without<crate::parts::SeesawHinge>,
+        ),
+    >,
+) {
+    for (board, hinge) in &boards {
+        let Ok((mut transform, position, rotation)) = anchors.get_mut(hinge.anchor) else {
+            continue;
+        };
+        write_pose(&mut transform, position, rotation, *board);
+    }
+}
+
+/// Slides a seesaw out of anything it was placed inside, without turning it.
+/// The hinge cannot move, so an overlap would otherwise spin the board.
+fn lift_buried_seesaws(
+    mut boards: Query<
+        (
+            Entity,
+            &mut Transform,
+            &crate::parts::SeesawHinge,
+            &Collider,
+        ),
+        Without<crate::parts::SeesawPivot>,
+    >,
+    mut anchors: Query<
+        (&mut Transform, Option<&mut Position>, Option<&mut Rotation>),
+        (
+            With<crate::parts::SeesawPivot>,
+            Without<crate::parts::SeesawHinge>,
+        ),
+    >,
+    obstacles: Query<
+        (&Position, Option<&Rotation>, &Collider, &RigidBody),
+        Without<crate::parts::SeesawPivot>,
+    >,
+) {
+    let static_obstacles: Vec<_> = obstacles
+        .iter()
+        .filter(|(_, _, _, body)| **body == RigidBody::Static)
+        .map(|(position, rotation, collider, _)| {
+            (
+                position.0,
+                rotation
+                    .map(|rotation| rotation.0)
+                    .unwrap_or(Quat::IDENTITY),
+                collider.clone(),
+            )
+        })
+        .collect();
+    let mut manifolds = Vec::new();
+    for _ in 0..8 {
+        let mut pushes = Vec::new();
+        for (entity, transform, hinge, collider) in &boards {
+            let mut push = Vec3::ZERO;
+            for (position, rotation, obstacle) in &static_obstacles {
+                manifolds.clear();
+                collider.contact_manifolds(
+                    obstacle,
+                    transform.translation,
+                    transform.rotation,
+                    *position,
+                    *rotation,
+                    0.0,
+                    &mut manifolds,
+                );
+                for manifold in &manifolds {
+                    let deepest = manifold
+                        .points
+                        .iter()
+                        .map(|point| point.penetration)
+                        .fold(0.0_f32, f32::max);
+                    if deepest > 0.0 {
+                        // The normal points from the seesaw into the obstacle.
+                        push -= manifold.normal * (deepest + 0.002);
+                    }
+                }
+            }
+            if push.length_squared() > 1e-8 {
+                pushes.push((entity, hinge.anchor, push));
+            }
+        }
+        if pushes.is_empty() {
+            break;
+        }
+        for (entity, anchor, push) in pushes {
+            let Ok((_, mut transform, _, _)) = boards.get_mut(entity) else {
+                continue;
+            };
+            transform.translation += push;
+            let Ok((mut anchor_transform, position, rotation)) = anchors.get_mut(anchor) else {
+                continue;
+            };
+            let mut pose = *anchor_transform;
+            pose.translation += push;
+            write_pose(&mut anchor_transform, position, rotation, pose);
+        }
+    }
+}
+
+pub fn despawn_seesaw_pivots(
+    mut commands: Commands,
+    pivots: Query<(Entity, &crate::parts::SeesawPivot)>,
+    boards: Query<(), With<crate::parts::Part>>,
+) {
+    for (entity, pivot) in &pivots {
+        if boards.get(pivot.board).is_err() {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
 pub fn enter_playing(
     mut commands: Commands,
     mut physics: ResMut<Time<Physics>>,
@@ -201,11 +324,16 @@ pub fn add_sim_systems(app: &mut App) {
                 .chain(),
         )
         .add_systems(OnEnter(GameState::Editing), enter_editing)
-        .add_systems(OnEnter(GameState::Playing), enter_playing)
+        .add_systems(
+            OnEnter(GameState::Playing),
+            (sync_seesaw_pivots, lift_buried_seesaws, enter_playing).chain(),
+        )
         .add_systems(
             Update,
             (
                 apply_level_ops,
+                sync_seesaw_pivots.run_if(physics_paused),
+                despawn_seesaw_pivots,
                 watch_goal.run_if(in_state(GameState::Playing)),
             ),
         );
