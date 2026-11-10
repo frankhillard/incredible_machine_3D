@@ -6,6 +6,7 @@ mod edit;
 mod goal;
 mod level;
 mod parts;
+mod record;
 mod scene;
 mod sim;
 mod ui;
@@ -31,6 +32,7 @@ pub fn run() {
         ));
     sim::add_sim_systems(&mut app);
     app.add_systems(Update, ui::save_level_file.after(sim::apply_level_ops));
+    app.add_systems(Update, ui::start_recording.after(ui::save_level_file));
     app.init_resource::<edit::AxisGizmo>()
         .add_systems(Startup, (scene::setup_camera, edit::configure_gizmos))
         .add_systems(OnEnter(GameState::Playing), edit::clear_axis_gizmo)
@@ -206,6 +208,8 @@ mod play_test {
             go_to: Some(3),
             reload: false,
             save: false,
+            record: false,
+            record_secs: 10.0,
         });
         app.finish();
         app.cleanup();
@@ -687,6 +691,8 @@ mod play_test {
             go_to: Some(5),
             reload: false,
             save: false,
+            record: false,
+            record_secs: 10.0,
         });
         app.finish();
         app.cleanup();
@@ -749,6 +755,8 @@ mod play_test {
             go_to: Some(7),
             reload: false,
             save: false,
+            record: false,
+            record_secs: 10.0,
         });
         app.finish();
         app.cleanup();
@@ -1073,6 +1081,53 @@ mod play_test {
             "the buried end spun the seesaw, drift ({x}, {y}, {z}), pose {:?}",
             transform.rotation.to_euler(EulerRot::XYZ)
         );
+    }
+
+    #[test]
+    fn a_recording_lists_the_spawned_part_and_a_pose() {
+        let mut app = test_app();
+        app.insert_resource(Scripted(vec![Placement {
+            kind: PartKind::Ball,
+            position: [0.2, 3.0, 0.25],
+            rotation_x: 0.0,
+            rotation_y: 0.0,
+            rotation_z: 0.0,
+            sticky: false,
+            ends: [[0.0; 3]; 2],
+        }]));
+        app.finish();
+        app.cleanup();
+        app.update();
+
+        let dir = std::env::temp_dir().join(format!("contraption-record-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        super::record::record(app.world_mut(), &dir, "take", 0.05);
+        for _ in 0..8 {
+            app.update();
+        }
+
+        let spec = std::fs::read_to_string(dir.join("take.objspec")).expect("objspec");
+        let ball = spec.lines().find_map(|line| {
+            let mut columns = line.split_whitespace();
+            let index = columns.next()?;
+            let kind = columns.next()?;
+            let role = columns.next()?;
+            (kind == "ball" && role == "player").then_some(index.to_string())
+        });
+        let ball = ball.expect("objspec should list the spawned ball");
+        let poses = std::fs::read_to_string(dir.join("take.datapos")).expect("datapos");
+        let pose = poses
+            .lines()
+            .any(|line| line.split_whitespace().nth(2) == Some(ball.as_str()));
+        assert!(
+            pose,
+            "datapos should have a pose line for the ball:\n{poses}"
+        );
+        assert!(
+            !dir.join("take.mp4").exists(),
+            "the headless take should not open the video"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn rope_end_ys(app: &mut App) -> Vec<f32> {

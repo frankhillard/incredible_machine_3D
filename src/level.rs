@@ -111,11 +111,27 @@ impl Campaign {
     }
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct LevelOps {
     pub reload: bool,
     pub go_to: Option<usize>,
     pub save: bool,
+    /// The Record button was pressed. The dialog runs after the UI pass.
+    pub record: bool,
+    /// Seconds to keep the machine running while recording.
+    pub record_secs: f32,
+}
+
+impl Default for LevelOps {
+    fn default() -> Self {
+        Self {
+            reload: false,
+            go_to: None,
+            save: false,
+            record: false,
+            record_secs: 10.0,
+        }
+    }
 }
 
 pub fn builtin_levels() -> Vec<Level> {

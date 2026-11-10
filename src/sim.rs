@@ -335,6 +335,7 @@ pub fn add_sim_systems(app: &mut App) {
                 sync_seesaw_pivots.run_if(physics_paused),
                 despawn_seesaw_pivots,
                 watch_goal.run_if(in_state(GameState::Playing)),
+                crate::record::sample_recording,
             ),
         );
 }

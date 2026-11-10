@@ -154,7 +154,7 @@ pub fn spawn_frame(
     // One invisible stop at the front edge of the felt. The wooden backboard
     // already closes the other side. Walls used to stand against the boards,
     // so a ball on a slope hit an unseen rail and could not fall off.
-    let felt_front = LANE_Z + 1.8;
+    let felt_front = LANE_Z + 5.0;
     lane_wall(&mut commands, felt_front + 0.04);
 }
 

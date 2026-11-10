@@ -102,6 +102,19 @@ pub fn draw_ui(
             if ui.add_enabled(editing, egui::Button::new("Save")).clicked() {
                 ops.save = true;
             }
+            ui.add_enabled(
+                editing,
+                egui::DragValue::new(&mut ops.record_secs)
+                    .speed(0.1)
+                    .range(0.1..=600.0)
+                    .suffix(" s"),
+            );
+            if ui
+                .add_enabled(editing, egui::Button::new("Record"))
+                .clicked()
+            {
+                ops.record = true;
+            }
             ui.separator();
             if ui
                 .add_enabled(editing, egui::Button::new("Previous"))
@@ -344,6 +357,47 @@ pub fn save_level_file(
     }
 }
 
+/// The Record button only sets [`LevelOps::record`]. Asking for a path blocks, so it
+/// happens here, after egui has finished the frame.
+pub fn start_recording(
+    mut commands: Commands,
+    state: Res<State<GameState>>,
+    mut ops: ResMut<LevelOps>,
+    campaign: Res<Campaign>,
+) {
+    if !ops.record {
+        return;
+    }
+    let secs = ops.record_secs;
+    ops.record = false;
+    if *state.get() != GameState::Editing {
+        return;
+    }
+    let suggested = suggested_mp4_name(&campaign.current().name);
+    let chosen = match prompt_record_path(&suggested) {
+        Ok(path) => path,
+        Err(err) => {
+            error!("could not record the level: {err}");
+            return;
+        }
+    };
+    let Some(path) = chosen else {
+        return;
+    };
+    let Some((folder, name)) = crate::record::split_record_path(&path) else {
+        error!("could not record the level: choose a file name");
+        return;
+    };
+    commands.queue(move |world: &mut World| {
+        crate::record::record(world, &folder, &name, secs);
+    });
+}
+
+fn suggested_mp4_name(name: &str) -> String {
+    let ron = suggested_ron_name(name);
+    format!("{}.mp4", ron.trim_end_matches(".ron"))
+}
+
 fn suggested_ron_name(name: &str) -> String {
     let mut file = String::new();
     for ch in name.chars() {
@@ -401,6 +455,45 @@ fn prompt_save(file_name: &str, contents: &str) -> Result<(), String> {
 #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 fn prompt_save(_file_name: &str, _contents: &str) -> Result<(), String> {
     Err("Save the level from the desktop build, which can ask for a file path.".into())
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn prompt_record_path(file_name: &str) -> Result<Option<std::path::PathBuf>, String> {
+    Ok(rfd::FileDialog::new()
+        .set_title("Record take")
+        .add_filter("Video", &["mp4"])
+        .set_file_name(file_name)
+        .save_file())
+}
+
+#[cfg(target_os = "linux")]
+fn prompt_record_path(file_name: &str) -> Result<Option<std::path::PathBuf>, String> {
+    let output = std::process::Command::new("zenity")
+        .args([
+            "--file-selection",
+            "--save",
+            "--confirm-overwrite",
+            "--title=Record take",
+            "--file-filter=Video | *.mp4",
+        ])
+        .arg(format!("--filename={file_name}"))
+        .output()
+        .map_err(|_| "Install zenity to choose where the recording is saved.".to_string())?;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return if err.is_empty() { Ok(None) } else { Err(err) };
+    }
+    let chosen = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if chosen.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(chosen.into()))
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+fn prompt_record_path(_file_name: &str) -> Result<Option<std::path::PathBuf>, String> {
+    Err("Record the level from the desktop build, which can ask for a file path.".into())
 }
 
 fn write_ron(mut path: std::path::PathBuf, contents: &str) -> Result<(), String> {
