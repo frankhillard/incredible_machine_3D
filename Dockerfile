@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-
 # Build the wasm module when web/pkg is not already in the build context,
 # then serve the page with python3 -m http.server 8080.
 #
@@ -13,10 +11,7 @@ WORKDIR /src
 
 COPY . .
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/src/target \
-    if [ -f web/pkg/incredible_machine_3d.js ] && [ -f web/pkg/incredible_machine_3d_bg.wasm ]; then \
+RUN if [ -f web/pkg/incredible_machine_3d.js ] && [ -f web/pkg/incredible_machine_3d_bg.wasm ]; then \
       echo "web/pkg already exists; skipping the wasm build"; \
     else \
       rustup target add wasm32-unknown-unknown && \
